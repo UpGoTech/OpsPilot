@@ -1,0 +1,53 @@
+@import "frappe-ui/style.css";
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    Helvetica,
+    Arial,
+    sans-serif;
+}
+
+/* Cursor-like agent panel scrollbars */
+.agent-panel,
+.agent-transcript {
+  scrollbar-width: thin;
+  scrollbar-color: #d0d0d0 transparent;
+}
+
+.agent-transcript::-webkit-scrollbar,
+.agent-panel ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.agent-transcript::-webkit-scrollbar-thumb,
+.agent-panel ::-webkit-scrollbar-thumb {
+  background: #d0d0d0;
+  border-radius: 4px;
+}
+
+.agent-transcript::-webkit-scrollbar-thumb:hover,
+.agent-panel ::-webkit-scrollbar-thumb:hover {
+  background: #b8b8b8;
+}
+
+/* Kill WebKit/frappe blue focus + spellcheck chrome in the composer */
+.agent-composer textarea,
+.agent-composer textarea:focus {
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  -webkit-box-shadow: none !important;
+}
