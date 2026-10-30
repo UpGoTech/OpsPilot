@@ -1,0 +1,113 @@
+{
+  "actions": [],
+  "allow_rename": 0,
+  "autoname": "field:user",
+  "creation": "2026-10-30 00:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "user",
+    "gateway_section",
+    "gateway_url",
+    "auth_mode",
+    "gateway_username",
+    "gateway_password",
+    "session_token",
+    "extra_headers"
+  ],
+  "fields": [
+    {
+      "fieldname": "user",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "label": "User",
+      "options": "User",
+      "reqd": 1,
+      "unique": 1
+    },
+    {
+      "fieldname": "gateway_section",
+      "fieldtype": "Section Break",
+      "label": "Hermes Gateway"
+    },
+    {
+      "description": "Base URL of the Hermes serve / dashboard gateway (e.g. https://hermes.example.com)",
+      "fieldname": "gateway_url",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Gateway URL",
+      "reqd": 1
+    },
+    {
+      "default": "password",
+      "fieldname": "auth_mode",
+      "fieldtype": "Select",
+      "in_list_view": 1,
+      "label": "Auth Mode",
+      "options": "password\ntoken",
+      "reqd": 1
+    },
+    {
+      "depends_on": "eval:doc.auth_mode==\"password\"",
+      "fieldname": "gateway_username",
+      "fieldtype": "Data",
+      "label": "Gateway Username"
+    },
+    {
+      "depends_on": "eval:doc.auth_mode==\"password\"",
+      "fieldname": "gateway_password",
+      "fieldtype": "Password",
+      "label": "Gateway Password"
+    },
+    {
+      "depends_on": "eval:doc.auth_mode==\"token\"",
+      "fieldname": "session_token",
+      "fieldtype": "Password",
+      "label": "Session Token"
+    },
+    {
+      "description": "Optional JSON object of extra HTTP headers for access proxies",
+      "fieldname": "extra_headers",
+      "fieldtype": "Small Text",
+      "label": "Extra Headers (JSON)"
+    }
+  ],
+  "index_web_pages_for_search": 0,
+  "links": [],
+  "modified": "2026-10-30 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "OpsPilot",
+  "name": "OpsPilot Settings",
+  "naming_rule": "By fieldname",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 0,
+      "export": 1,
+      "print": 0,
+      "read": 1,
+      "report": 1,
+      "role": "System Manager",
+      "share": 0,
+      "write": 1
+    },
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 0,
+      "export": 0,
+      "print": 0,
+      "read": 1,
+      "report": 0,
+      "role": "All",
+      "share": 0,
+      "write": 1
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": [],
+  "track_changes": 1
+}

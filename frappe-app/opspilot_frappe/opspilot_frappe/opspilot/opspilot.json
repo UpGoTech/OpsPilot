@@ -1,0 +1,8 @@
+{
+  "name": "OpsPilot",
+  "module_name": "OpsPilot",
+  "color": "grey",
+  "icon": "octicon octicon-file-directory",
+  "type": "module",
+  "label": "OpsPilot"
+}

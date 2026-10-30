@@ -1,5 +1,35 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AuthProbe, ConnectionConfig } from "../types";
+import type {
+  AuthProbe,
+  ConnectionConfig,
+  ErpnextConfig,
+  ErpnextSessionInfo,
+  OpsPilotSettingsPayload,
+} from "../types";
+
+export function getErpnextConfig() {
+  return invoke<ErpnextConfig>("get_erpnext_config");
+}
+
+export function saveErpnextConfig(config: ErpnextConfig) {
+  return invoke<ErpnextConfig>("save_erpnext_config", { config });
+}
+
+export function getErpnextSession() {
+  return invoke<ErpnextSessionInfo>("get_erpnext_session");
+}
+
+export function erpnextLogin(usr: string, pwd: string) {
+  return invoke<ErpnextSessionInfo>("erpnext_login", { usr, pwd });
+}
+
+export function erpnextLogout() {
+  return invoke<void>("erpnext_logout");
+}
+
+export function erpnextFetchOpspilotSettings() {
+  return invoke<OpsPilotSettingsPayload | null>("erpnext_fetch_opspilot_settings");
+}
 
 export function getConnection() {
   return invoke<ConnectionConfig>("get_connection");

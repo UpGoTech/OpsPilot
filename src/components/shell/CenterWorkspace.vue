@@ -284,7 +284,6 @@ watch(
   () => [
     center.activeId,
     layout.settingsOpen,
-    layout.sidebarOpen,
     layout.agentOpen,
     layout.agentWidth,
     isBrowser.value,
@@ -712,7 +711,7 @@ const filePreview = computed(() => {
         v-else
         class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-sm text-[#8a8a8a]"
       >
-        <p>Open a workspace file, or press + for a browser tab.</p>
+        <p>Press + to open a browser tab.</p>
       </div>
     </div>
   </section>
