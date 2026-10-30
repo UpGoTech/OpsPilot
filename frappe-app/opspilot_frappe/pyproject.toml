@@ -1,0 +1,14 @@
+[project]
+name = "opspilot_frappe"
+authors = [{ name = "OpsPilot", email = "opspilot@example.com" }]
+description = "Per-user Hermes settings vault for OpsPilot"
+requires-python = ">=3.10"
+readme = "README.md"
+dynamic = ["version"]
+dependencies = []
+
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
+[tool.bench.dev-dependencies]

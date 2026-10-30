@@ -1,11 +1,13 @@
 mod auth;
 mod browser;
 mod connection;
+mod erpnext;
 mod fs_api;
 mod gateway;
 
 use browser::BrowserState;
 use connection::ConnectionConfig;
+use erpnext::ErpnextState;
 use gateway::GatewayManager;
 use serde_json::Value;
 use std::sync::Arc;
@@ -13,6 +15,81 @@ use tauri::State;
 
 struct AppState {
     gateway: Arc<GatewayManager>,
+}
+
+#[tauri::command]
+fn get_erpnext_config(app: tauri::AppHandle) -> Result<erpnext::ErpnextConfig, String> {
+    erpnext::load_config(&app).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_erpnext_config(
+    app: tauri::AppHandle,
+    config: erpnext::ErpnextConfig,
+    erpnext_state: State<'_, ErpnextState>,
+) -> Result<erpnext::ErpnextConfig, String> {
+    let previous = erpnext::load_config(&app).map_err(|e| e.to_string())?;
+    let mut cleaned = config;
+    if !cleaned.site_url.trim().is_empty() {
+        cleaned.site_url =
+            erpnext::normalize_site_url(&cleaned.site_url).map_err(|e| e.to_string())?;
+    }
+    erpnext::save_config(&app, &cleaned).map_err(|e| e.to_string())?;
+    // Changing the site invalidates any in-memory ERPNext session.
+    if previous.site_url.trim() != cleaned.site_url.trim() {
+        erpnext_state.clear();
+    }
+    Ok(cleaned)
+}
+
+#[tauri::command]
+fn get_erpnext_session(
+    app: tauri::AppHandle,
+    erpnext_state: State<'_, ErpnextState>,
+) -> Result<erpnext::ErpnextSessionInfo, String> {
+    let config = erpnext::load_config(&app).map_err(|e| e.to_string())?;
+    Ok(erpnext::session_info(&config.site_url, &erpnext_state))
+}
+
+#[tauri::command]
+async fn erpnext_login(
+    app: tauri::AppHandle,
+    erpnext_state: State<'_, ErpnextState>,
+    usr: String,
+    pwd: String,
+) -> Result<erpnext::ErpnextSessionInfo, String> {
+    let config = erpnext::load_config(&app).map_err(|e| e.to_string())?;
+    if config.site_url.trim().is_empty() {
+        return Err("Save an ERPNext site URL in Settings first.".into());
+    }
+    erpnext::login(&config.site_url, &usr, &pwd, &erpnext_state)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn erpnext_logout(
+    app: tauri::AppHandle,
+    erpnext_state: State<'_, ErpnextState>,
+) -> Result<(), String> {
+    let config = erpnext::load_config(&app).map_err(|e| e.to_string())?;
+    erpnext::logout(&config.site_url, &erpnext_state)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn erpnext_fetch_opspilot_settings(
+    app: tauri::AppHandle,
+    erpnext_state: State<'_, ErpnextState>,
+) -> Result<Option<erpnext::OpsPilotSettingsPayload>, String> {
+    let config = erpnext::load_config(&app).map_err(|e| e.to_string())?;
+    if config.site_url.trim().is_empty() {
+        return Err("ERPNext site URL is not configured.".into());
+    }
+    erpnext::fetch_opspilot_settings(&config.site_url, &erpnext_state)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -156,8 +233,15 @@ pub fn run() {
         .manage(AppState {
             gateway: gateway.clone(),
         })
+        .manage(ErpnextState::default())
         .manage(BrowserState::default())
         .invoke_handler(tauri::generate_handler![
+            get_erpnext_config,
+            save_erpnext_config,
+            get_erpnext_session,
+            erpnext_login,
+            erpnext_logout,
+            erpnext_fetch_opspilot_settings,
             get_connection,
             save_connection,
             probe_auth,

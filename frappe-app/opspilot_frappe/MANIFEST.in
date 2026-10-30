@@ -1,0 +1,15 @@
+include MANIFEST.in
+include README.md
+include license.txt
+recursive-include opspilot_frappe *.css
+recursive-include opspilot_frappe *.csv
+recursive-include opspilot_frappe *.html
+recursive-include opspilot_frappe *.ico
+recursive-include opspilot_frappe *.js
+recursive-include opspilot_frappe *.json
+recursive-include opspilot_frappe *.md
+recursive-include opspilot_frappe *.png
+recursive-include opspilot_frappe *.py
+recursive-include opspilot_frappe *.svg
+recursive-include opspilot_frappe *.txt
+recursive-exclude opspilot_frappe *.pyc

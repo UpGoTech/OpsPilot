@@ -4,7 +4,6 @@ import { useCenterTabsStore } from "./centerTabs";
 
 const AGENT_WIDTH_KEY = "opspilot.agentWidth";
 const AGENT_OPEN_KEY = "opspilot.agentOpen";
-const SIDEBAR_OPEN_KEY = "opspilot.sidebarOpen";
 
 function readBool(key: string, fallback: boolean): boolean {
   try {
@@ -26,8 +25,6 @@ function readNumber(key: string, fallback: number): number {
 }
 
 export const useLayoutStore = defineStore("layout-v2", () => {
-  /** Left workspace / files panel (Cursor explorer toggle). */
-  const sidebarOpen = ref(readBool(SIDEBAR_OPEN_KEY, true));
   /** Right agent chat panel. */
   const agentOpen = ref(readBool(AGENT_OPEN_KEY, true));
   /** History list inside the agent panel (clock control). */
@@ -38,9 +35,6 @@ export const useLayoutStore = defineStore("layout-v2", () => {
   const settingsOpen = ref(false);
 
   watch(agentOpen, (v) => localStorage.setItem(AGENT_OPEN_KEY, v ? "1" : "0"));
-  watch(sidebarOpen, (v) =>
-    localStorage.setItem(SIDEBAR_OPEN_KEY, v ? "1" : "0"),
-  );
   watch(agentWidth, (v) => localStorage.setItem(AGENT_WIDTH_KEY, String(v)));
 
   watch(settingsOpen, (open) => {
@@ -52,10 +46,6 @@ export const useLayoutStore = defineStore("layout-v2", () => {
   function toggleAgent() {
     agentOpen.value = !agentOpen.value;
     if (!agentOpen.value) agentHistoryOpen.value = false;
-  }
-
-  function toggleSidebar() {
-    sidebarOpen.value = !sidebarOpen.value;
   }
 
   function toggleAgentHistory() {
@@ -113,13 +103,11 @@ export const useLayoutStore = defineStore("layout-v2", () => {
   }
 
   return {
-    sidebarOpen,
     agentOpen,
     agentHistoryOpen,
     agentWidth,
     settingsOpen,
     toggleAgent,
-    toggleSidebar,
     toggleAgentHistory,
     openAgentHistory,
     closeAgentHistory,

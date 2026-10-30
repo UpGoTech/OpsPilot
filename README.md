@@ -8,13 +8,14 @@ See [`AGENTS.md`](./AGENTS.md) and [`spec/v1.md`](./spec/v1.md).
 
 - Chat with streaming responses
 - Sessions list / create / resume
-- Remote workspace file tree (read-only preview)
-- Settings: gateway URL + username/password (Desktop-style), or legacy session token
+- Center tabs: HTML/PDF artifacts + nested browser
+- ERPNext login gate; Hermes credentials from per-user `OpsPilot Settings` DocType
 
 ## Prerequisites
 
 - Node 20+
 - Rust toolchain (for Tauri)
+- An ERPNext / Frappe site with the [`opspilot_frappe`](./frappe-app/opspilot_frappe) app installed
 - A running Hermes backend: `hermes serve` (or dashboard) reachable over the network
 
 ## Develop
@@ -32,11 +33,12 @@ npm run tauri build
 
 ## Connect
 
-Same flow as Hermes Desktop:
+Hermes credentials are **not** entered in OpsPilot. They live per ERPNext user.
 
-1. Open **Settings**
-2. Enter the gateway base URL (e.g. `https://hermes.example.com`)
-3. OpsPilot probes `/api/status` — if the gateway uses username/password, enter those credentials
-4. Click **Sign in & connect**
+1. Install [`frappe-app/opspilot_frappe`](./frappe-app/opspilot_frappe) on your ERPNext site (`bench get-app` + `install-app` + `migrate`).
+2. In Desk, open **OpsPilot Settings** and create a document for each user (Hermes URL + password or session token).
+3. In OpsPilot **Settings**, save the ERPNext site URL (e.g. `https://erp.example.com`).
+4. Sign in with your ERPNext username and password.
+5. OpsPilot loads your DocType settings and connects to Hermes.
 
-Password gateways use session cookies + a reminted WebSocket ticket. Legacy token-only gateways still accept a session token field.
+The ERPNext session (`sid`) is kept in memory only — every app launch requires login again. See [`spec/erpnext-integration.md`](./spec/erpnext-integration.md).

@@ -3,6 +3,29 @@ export type GatewayState = "idle" | "connecting" | "open" | "closed" | "error";
 /** Desktop remote auth choice: session token paste vs sign-in. */
 export type AuthMode = "auto" | "token" | "password";
 
+/** Persisted locally — ERPNext site URL only. */
+export interface ErpnextConfig {
+  siteUrl: string;
+}
+
+/** In-memory ERPNext session info (sid never leaves Rust). */
+export interface ErpnextSessionInfo {
+  loggedIn: boolean;
+  user: string;
+  fullName: string;
+  siteUrl: string;
+}
+
+/** From opspilot_frappe.api.get_my_opspilot_settings (camelCase from Rust). */
+export interface OpsPilotSettingsPayload {
+  gatewayUrl: string;
+  authMode: string;
+  gatewayUsername: string;
+  gatewayPassword: string;
+  sessionToken: string;
+  extraHeaders: Record<string, string>;
+}
+
 export interface ConnectionConfig {
   name?: string;
   url: string;
