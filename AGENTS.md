@@ -6,10 +6,11 @@ Product and implementation plans live under [`spec/`](./spec/). Read [`spec/v1.m
 
 ## What this app is
 
-Three parties, each authoritative for one thing:
+Four parties, each authoritative for one thing:
 
-- **Tauri (Rust)** owns the machine: persisted connection config, HTTP probes, remote `/api/fs` calls, and the WebSocket JSON-RPC dial to the gateway. Native networking stays in Rust so proxied remotes work (same lesson as Desktop dialing WS from the main process).
-- **The Vue renderer** owns the experience: navigation, presentation, and ephemeral interaction state.
+- **Tauri (Rust)** owns the machine: persisted ERPNext site URL, in-memory ERPNext `sid`, Frappe HTTP, Hermes probes / `/api/fs`, and the WebSocket JSON-RPC dial. Native networking stays in Rust so proxied remotes work (same lesson as Desktop dialing WS from the main process).
+- **The Vue renderer** owns the experience: boot gate (URL → login → shell), navigation, presentation, and ephemeral interaction state.
+- **ERPNext + `opspilot_frappe`** owns identity and per-user Hermes settings (DocType vault). See [`spec/erpnext-integration.md`](./spec/erpnext-integration.md).
 - **The Hermes gateway** owns the work: sessions, tools, model calls, streaming events, and the remote workspace filesystem.
 
 Keep the seams clean. The UI never reimplements agent behavior. Gateway truth is cached in Pinia stores; merge, don't clobber.
@@ -28,7 +29,7 @@ Auth matches Hermes Desktop remote mode:
 2. **Password gateways** (`basic`): `POST /auth/password-login` → `hermes_session_*` cookies; REST sends `Cookie`; WS remints `POST /api/auth/ws-ticket` then dials `/api/ws?ticket=…`.
 3. **Token gateways** (no auth gate / legacy): `X-Hermes-Session-Token` + `/api/ws?token=…`.
 
-Settings mirrors Desktop’s single **Remote gateway → Save connection** form: name, URL, auth toggle (Session token | Sign in), and optional extra gateway headers. One connection only — no multi-connection registry. Persist cookies (not the password).
+Hermes credentials are **not** edited in OpsPilot. After ERPNext login, Rust fetches the signed-in user’s `OpsPilot Settings` DocType and maps it onto the existing Hermes `ConnectionConfig` (password or token path unchanged).
 
 Core RPCs: `ping`, `session.create`, `session.list`, `session.activate`, `session.history`, `session.title`, `prompt.submit`, `session.interrupt`.
 
@@ -37,12 +38,14 @@ Core RPCs: `ping`, `session.create`, `session.list`, `session.activate`, `sessio
 - Tauri 2 + Rust
 - Vue 3 + Vite + TypeScript + Pinia
 - [frappe-ui](https://ui.frappe.io/) for shell primitives (Sidebar / rail / inputs / buttons)
-- Persist connection as `{app_config_dir}/connection.json` (cookies yes, password no); keep the token out of plaintext logs
+- Persist ERPNext site URL as `{app_config_dir}/erpnext.json`; ERPNext `sid` is memory-only (login required every launch). Hermes runtime config is derived from ERPNext for the process lifetime.
+- Companion Frappe app: [`frappe-app/opspilot_frappe`](./frappe-app/opspilot_frappe)
 
 ## UI contract
 
-- Cursor-like shell: **Workspace** (left, toggleable files/browser switch), **center** (tabbed file/artifact preview + nested webview browser), **Agent** (right, resizable).
-- App top bar: left panel toggle · centered **OpsPilot** · chat toggle + settings.
+- Cursor-like shell: **center** (tabbed artifact preview + nested webview browser) · **Agent** (right, resizable). No left file-browser rail in v1.
+- Boot: ERPNext URL settings (if missing) → native ERPNext login → shell.
+- App top bar: centered **OpsPilot** · Online/Offline · chat toggle + settings (ERPNext URL) + logout.
 - Agent chrome: open session tabs (× to close) · + new · clock history (search/pin/groups) · ⋯ export · panel toggle.
 - Flat, not boxed. Group with whitespace and hairlines; avoid nested cards and purple/glow defaults.
 - Distinct empty / loading / reconnecting / error states with honest copy and a way forward.
@@ -50,16 +53,17 @@ Core RPCs: `ping`, `session.create`, `session.list`, `session.activate`, `sessio
 
 ## State rules
 
-- Connection config lives in Rust; the renderer holds a cache.
+- ERPNext site URL lives in Rust on disk; ERPNext `sid` lives in Rust memory only.
+- Hermes `ConnectionConfig` is derived from ERPNext after login; the renderer holds a cache.
 - Sessions, messages, and file listings are gateway-authoritative caches.
-- Scope persisted keys clearly (`connection`, not ad-hoc locals).
+- Scope persisted keys clearly (`erpnext`, not ad-hoc locals).
 - A stale async result must not overwrite newer user intent.
 
 ## v1 scope
 
-In: chat, sessions (history + tabs + pin/delete), remote workspace file tree (read-only preview), center tabs (files + HTML/PDF artifacts + nested webview browser), export transcript, settings (gateway URL + token + test).
+In: chat, sessions (history + tabs + pin/delete), center tabs (HTML/PDF artifacts + nested webview browser; artifact Save As via `/api/fs`), export transcript, ERPNext URL settings + login gate, Hermes connect via per-user DocType.
 
-Out: local Hermes bootstrap, OAuth, multi-profile connections, voice, terminal, file write/delete, native spreadsheet preview.
+Out: left workspace file tree / browser rail, local Hermes bootstrap, OAuth, multi-profile connections, voice, terminal, file write/delete, native spreadsheet preview, editing Hermes credentials inside OpsPilot, persisting ERPNext `sid`.
 
 ## Taste test before handoff
 
