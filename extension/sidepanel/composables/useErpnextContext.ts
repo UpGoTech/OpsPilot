@@ -1,5 +1,12 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useErpnextStore } from "../../../src/stores/erpnext";
+import {
+  findSiteTabId,
+  tabGetLoggedUser,
+  tabGetOpspilotSettings,
+  tabPingOpspilot,
+} from "../../native/tabRpc";
+import { hostnameOf, readBrowserSid } from "../../native/browserSession";
 
 export interface ActivePage {
   title: string;
@@ -10,7 +17,7 @@ export interface ActivePage {
 /**
  * Layered readiness of the focused OpsPilot site tab.
  * - wrong_tab: focused tab is not the configured site
- * - not_logged_in: correct site, but no browser session (Guest / no sid)
+ * - not_logged_in: correct site, but Desk session is Guest / missing
  * - opspilot_unavailable: logged in, but OpsPilot app missing on site
  * - user_not_enabled: app present, but this user has no OpsPilot Settings
  * - ok: site + login + app + user settings all good
@@ -30,17 +37,6 @@ export interface SiteGate {
   detail: string;
 }
 
-function hostOf(raw: string): string | null {
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  try {
-    const withScheme = trimmed.includes("://") ? trimmed : `https://${trimmed}`;
-    return new URL(withScheme).host.toLowerCase();
-  } catch {
-    return null;
-  }
-}
-
 function isRestrictedUrl(url: string): boolean {
   return (
     url.startsWith("chrome://") ||
@@ -51,127 +47,13 @@ function isRestrictedUrl(url: string): boolean {
   );
 }
 
+/** Compare hostnames only — ignore port (bench :8000 vs configured URL). */
 export function matchesErpnextSite(tabUrl: string, siteUrl: string): boolean {
   if (!tabUrl || isRestrictedUrl(tabUrl)) return false;
-  const tabHost = hostOf(tabUrl);
-  const siteHost = hostOf(siteUrl);
+  const tabHost = hostnameOf(tabUrl);
+  const siteHost = hostnameOf(siteUrl);
   if (!tabHost || !siteHost) return false;
   return tabHost === siteHost;
-}
-
-function normalizeBase(siteUrl: string): string {
-  const trimmed = siteUrl.trim();
-  if (!trimmed) return "";
-  try {
-    const withScheme = trimmed.includes("://") ? trimmed : `https://${trimmed}`;
-    const u = new URL(withScheme);
-    return `${u.protocol}//${u.host}`.replace(/\/$/, "");
-  } catch {
-    return trimmed.replace(/\/$/, "");
-  }
-}
-
-async function readBrowserSid(siteUrl: string): Promise<string | null> {
-  const base = normalizeBase(siteUrl);
-  if (!base || !chrome.cookies?.get) return null;
-  try {
-    const cookie = await chrome.cookies.get({ url: base, name: "sid" });
-    const value = cookie?.value?.trim() ?? "";
-    if (!value || value === "Guest") return null;
-    return value;
-  } catch {
-    return null;
-  }
-}
-
-async function fetchJson(
-  url: string,
-  sid: string | null,
-): Promise<{ status: number; body: unknown; text: string }> {
-  const headers: Record<string, string> = { Accept: "application/json" };
-  if (sid) headers.Cookie = `sid=${sid}`;
-  const response = await fetch(url, {
-    method: "GET",
-    headers,
-    credentials: "omit",
-  });
-  const text = await response.text();
-  let body: unknown = null;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = null;
-  }
-  return { status: response.status, body, text };
-}
-
-function messageOf(body: unknown): unknown {
-  if (!body || typeof body !== "object") return null;
-  return (body as Record<string, unknown>).message;
-}
-
-async function probeLoggedUser(
-  base: string,
-  sid: string,
-): Promise<string | null> {
-  const { status, body } = await fetchJson(
-    `${base}/api/method/frappe.auth.get_logged_user`,
-    sid,
-  );
-  if (status === 401 || status === 403) return null;
-  if (status < 200 || status >= 300) return null;
-  const message = messageOf(body);
-  if (typeof message === "string" && message && message !== "Guest") {
-    return message;
-  }
-  return null;
-}
-
-async function probeOpspilotApp(base: string, sid: string | null): Promise<boolean> {
-  const { status, body, text } = await fetchJson(
-    `${base}/api/method/opspilot_frappe.api.ping`,
-    sid,
-  );
-  if (status >= 200 && status < 300) {
-    const message = messageOf(body);
-    if (message && typeof message === "object") {
-      return Boolean((message as Record<string, unknown>).ok);
-    }
-    return true;
-  }
-  const blob = `${text}${JSON.stringify(body ?? "")}`.toLowerCase();
-  if (
-    status === 404 ||
-    blob.includes("not installed") ||
-    blob.includes("failed to get method") ||
-    blob.includes("opspilot_frappe")
-  ) {
-    return false;
-  }
-  // Auth-only failure still means the method exists.
-  if (status === 401 || status === 403) return true;
-  return false;
-}
-
-async function probeUserSettings(
-  base: string,
-  sid: string,
-): Promise<"ok" | "missing" | "unauthorized"> {
-  const { status, body } = await fetchJson(
-    `${base}/api/method/opspilot_frappe.api.get_my_opspilot_settings`,
-    sid,
-  );
-  if (status === 401 || status === 403) return "unauthorized";
-  if (status < 200 || status >= 300) return "missing";
-  const message = messageOf(body);
-  if (message == null || message === false || message === "") return "missing";
-  if (typeof message === "object") {
-    const gateway =
-      (message as Record<string, unknown>).gateway_url ??
-      (message as Record<string, unknown>).gatewayUrl;
-    if (!String(gateway ?? "").trim()) return "missing";
-  }
-  return "ok";
 }
 
 const page = ref<ActivePage | null>(null);
@@ -216,9 +98,9 @@ async function refreshPage() {
 async function refreshGate(siteUrl: string) {
   const seq = ++probeSeq;
   checking.value = true;
-  const base = normalizeBase(siteUrl);
+  const siteHost = hostnameOf(siteUrl) ?? "";
 
-  if (!base) {
+  if (!siteUrl.trim()) {
     siteGate.value = { status: "no_site", username: "", detail: "" };
     checking.value = false;
     return;
@@ -232,56 +114,71 @@ async function refreshGate(siteUrl: string) {
     siteGate.value = {
       status: "wrong_tab",
       username: "",
-      detail: hostOf(siteUrl) ?? base,
+      detail: siteHost,
     };
     checking.value = false;
     return;
   }
 
   try {
-    const sid = await readBrowserSid(base);
-    if (seq !== probeSeq) return;
-    if (!sid) {
+    // Prefer the focused matching tab; fall back to any tab on that host.
+    let tabId: number | null = null;
+    const focused = await chrome.tabs.query({
+      active: true,
+      lastFocusedWindow: true,
+    });
+    const focusedTab = focused[0];
+    if (focusedTab?.id && focusedTab.url && matchesErpnextSite(focusedTab.url, siteUrl)) {
+      tabId = focusedTab.id;
+    } else {
+      const found = await findSiteTabId(siteUrl);
+      tabId = found?.tabId ?? null;
+    }
+
+    if (tabId == null) {
       siteGate.value = {
-        status: "not_logged_in",
+        status: "wrong_tab",
         username: "",
-        detail: hostOf(siteUrl) ?? base,
+        detail: siteHost,
       };
       checking.value = false;
       return;
     }
 
-    const username = (await probeLoggedUser(base, sid)) ?? "";
+    // Same-origin probe inside Desk — extension fetch cannot send sid Cookie.
+    const username = await tabGetLoggedUser(tabId);
     if (seq !== probeSeq) return;
     if (!username) {
+      // Cookie presence is a secondary hint for debugging; gate on tab RPC.
+      void readBrowserSid(siteUrl, tabUrl);
       siteGate.value = {
         status: "not_logged_in",
         username: "",
-        detail: hostOf(siteUrl) ?? base,
+        detail: siteHost,
       };
       checking.value = false;
       return;
     }
 
-    const appOk = await probeOpspilotApp(base, sid);
+    const appOk = await tabPingOpspilot(tabId);
     if (seq !== probeSeq) return;
     if (!appOk) {
       siteGate.value = {
         status: "opspilot_unavailable",
         username,
-        detail: hostOf(siteUrl) ?? base,
+        detail: siteHost,
       };
       checking.value = false;
       return;
     }
 
-    const settings = await probeUserSettings(base, sid);
+    const settings = await tabGetOpspilotSettings(tabId);
     if (seq !== probeSeq) return;
     if (settings === "unauthorized") {
       siteGate.value = {
         status: "not_logged_in",
         username: "",
-        detail: hostOf(siteUrl) ?? base,
+        detail: siteHost,
       };
       checking.value = false;
       return;
@@ -290,19 +187,19 @@ async function refreshGate(siteUrl: string) {
       siteGate.value = {
         status: "user_not_enabled",
         username,
-        detail: hostOf(siteUrl) ?? base,
+        detail: siteHost,
       };
       checking.value = false;
       return;
     }
 
-    siteGate.value = { status: "ok", username, detail: hostOf(siteUrl) ?? base };
+    siteGate.value = { status: "ok", username, detail: siteHost };
   } catch {
     if (seq !== probeSeq) return;
     siteGate.value = {
-      status: "wrong_tab",
+      status: "not_logged_in",
       username: "",
-      detail: hostOf(siteUrl) ?? base,
+      detail: siteHost,
     };
   } finally {
     if (seq === probeSeq) checking.value = false;
@@ -330,12 +227,15 @@ function onFocusChanged() {
 
 function onCookieChanged(changeInfo: chrome.cookies.CookieChangeInfo) {
   const erpnext = useErpnextStore();
-  const siteHost = hostOf(erpnext.siteUrl);
+  const siteHost = hostnameOf(erpnext.siteUrl);
   if (!siteHost) return;
   const cookieHost = changeInfo.cookie.domain.replace(/^\./, "").toLowerCase();
   if (
     changeInfo.cookie.name === "sid" &&
-    (cookieHost === siteHost || siteHost.endsWith(`.${cookieHost}`) || cookieHost.endsWith(siteHost))
+    (cookieHost === siteHost ||
+      siteHost.endsWith(`.${cookieHost}`) ||
+      cookieHost.endsWith(`.${siteHost}`) ||
+      cookieHost.endsWith(siteHost))
   ) {
     void refreshGate(erpnext.siteUrl);
   }
@@ -378,7 +278,7 @@ function stopListening() {
 export function useErpnextContext() {
   const erpnext = useErpnextStore();
 
-  const siteHost = computed(() => hostOf(erpnext.siteUrl) ?? "");
+  const siteHost = computed(() => hostnameOf(erpnext.siteUrl) ?? "");
 
   const isErpnextActive = computed(() => siteGate.value.status === "ok");
 

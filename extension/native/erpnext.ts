@@ -283,101 +283,66 @@ export async function logout(): Promise<void> {
 }
 
 /**
- * Adopt the browser tab's OpsPilot `sid` (chrome.cookies) so the side panel
- * never needs its own username/password form.
+ * Adopt the Desk tab session. Identity is read via same-origin fetch inside
+ * the tab (extension fetch cannot send the site Cookie header). `sid` is still
+ * cached from chrome.cookies when available for later native calls.
  */
 export async function adoptBrowserSession(): Promise<ErpnextSessionInfo> {
+  const { findSiteTabId, tabGetLoggedUser, tabFetchJson } = await import(
+    /* @vite-ignore */ "./tabRpc"
+  );
+  const { getActiveTabUrl, readBrowserSid, originOf } = await import(
+    /* @vite-ignore */ "./browserSession"
+  );
+
   const config = await loadConfig();
   if (!config.siteUrl.trim()) {
     throw new Error("Save an OpsPilot site URL in Settings first.");
   }
-  const base = normalizeSiteUrl(config.siteUrl);
-  if (!chrome.cookies?.get) {
-    throw new Error("Could not read the OpsPilot site session from this browser.");
+
+  const tab = await findSiteTabId(config.siteUrl);
+  if (!tab) {
+    throw new Error("Open your OpsPilot Desk tab first.");
   }
 
-  const cookie = await chrome.cookies.get({ url: base, name: "sid" });
-  const sid = cookie?.value?.trim() ?? "";
-  if (!sid || sid === "Guest") {
-    throw new Error("Not signed in on your OpsPilot site. Sign in on the Desk tab first.");
-  }
-
-  const { url } = siteApiUrl(base, "/api/method/frappe.auth.get_logged_user");
-  const response = await withDeadline(
-    fetch(url, {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        Cookie: `sid=${sid}`,
-      },
-      credentials: "omit",
-    }),
-    8,
-  );
-  const status = response.status;
-  const text = await response.text();
-  let body: unknown = null;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    body = null;
-  }
-
-  if (status === 401 || status === 403) {
-    await writeSession(null);
-    throw new Error("Not signed in on your OpsPilot site. Sign in on the Desk tab first.");
-  }
-  if (status < 200 || status >= 300) {
-    throw new Error(httpStatusMessage(status, text, body, "Session check"));
-  }
-
-  const message =
-    body && typeof body === "object"
-      ? (body as Record<string, unknown>).message
-      : null;
-  const user =
-    typeof message === "string" && message && message !== "Guest" ? message : "";
+  const user = await tabGetLoggedUser(tab.tabId);
   if (!user) {
-    await writeSession(null);
     throw new Error("Not signed in on your OpsPilot site. Sign in on the Desk tab first.");
   }
 
-  // Best-effort full name from User resource (non-fatal if it fails).
   let fullName = user;
   try {
-    const { url: userUrl } = siteApiUrl(
-      base,
-      `/api/resource/User/${encodeURIComponent(user)}?fields=["full_name"]`,
+    const profile = await tabFetchJson(
+      tab.tabId,
+      `/api/resource/User/${encodeURIComponent(user)}?fields=${encodeURIComponent('["full_name"]')}`,
     );
-    const userResp = await withDeadline(
-      fetch(userUrl, {
-        method: "GET",
-        headers: {
-          Accept: "application/json",
-          Cookie: `sid=${sid}`,
-        },
-        credentials: "omit",
-      }),
-      5,
-    );
-    if (userResp.ok) {
-      const userBody = (await userResp.json()) as {
-        data?: { full_name?: string };
-      };
-      if (userBody.data?.full_name?.trim()) {
-        fullName = userBody.data.full_name.trim();
-      }
+    if (profile.ok && profile.body && typeof profile.body === "object") {
+      const data = (profile.body as { data?: { full_name?: string } }).data;
+      if (data?.full_name?.trim()) fullName = data.full_name.trim();
     }
   } catch {
     // keep username
   }
 
-  await writeSession({ sid, user, fullName, siteUrl: base });
+  const tabUrl = (await getActiveTabUrl()) ?? tab.tabUrl;
+  const cookie = await readBrowserSid(config.siteUrl, tabUrl);
+  const origin = cookie?.origin ?? originOf(tab.tabUrl) ?? normalizeSiteUrl(config.siteUrl);
+  // Prefer a real sid cookie; fall back to a placeholder so session_info is logged-in.
+  // Settings fetch uses tab RPC and does not require this sid.
+  const sid = cookie?.sid ?? `tab:${user}`;
+
+  await writeSession({
+    sid,
+    user,
+    fullName,
+    siteUrl: origin,
+  });
+
   return {
     loggedIn: true,
     user,
     fullName,
-    siteUrl: base,
+    siteUrl: origin,
   };
 }
 
@@ -453,63 +418,32 @@ function parseSettingsMessage(message: unknown): OpsPilotSettingsPayload {
 }
 
 export async function fetchOpspilotSettings(): Promise<OpsPilotSettingsPayload | null> {
+  const { findSiteTabId, tabGetOpspilotSettings, tabPingOpspilot } = await import(
+    "./tabRpc"
+  );
+
   const config = await loadConfig();
   if (!config.siteUrl.trim()) {
     throw new Error("OpsPilot site URL is not configured.");
   }
 
-  const supported = await probeSupport();
-  if (!supported) {
+  const tab = await findSiteTabId(config.siteUrl);
+  if (!tab) {
+    throw new Error("Open your OpsPilot Desk tab first.");
+  }
+
+  const appOk = await tabPingOpspilot(tab.tabId);
+  if (!appOk) {
     throw new Error(siteUnsupportedMessage(normalizeSiteUrl(config.siteUrl)));
   }
 
-  const session = await readSession();
-  if (!session?.sid) {
-    throw new Error("Not signed in on your OpsPilot site. Sign in on the Desk tab first.");
-  }
-
-  const { url, base } = siteApiUrl(
-    config.siteUrl,
-    "/api/method/opspilot_frappe.api.get_my_opspilot_settings",
-  );
-  const response = await withDeadline(
-    fetch(url, {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        Cookie: `sid=${session.sid}`,
-      },
-      credentials: "omit",
-    }),
-    8,
-  );
-
-  const status = response.status;
-  const text = await response.text();
-  let body: unknown = null;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    body = null;
-  }
-
-  if (status === 401 || status === 403) {
+  const result = await tabGetOpspilotSettings(tab.tabId);
+  if (result === "unauthorized") {
     await writeSession(null);
     throw new Error("OpsPilot site session expired. Sign in on the Desk tab again.");
   }
-
-  if (status < 200 || status >= 300) {
-    if (looksLikeAppMissing(status, text, body)) {
-      throw new Error(siteUnsupportedMessage(base));
-    }
-    throw new Error(httpStatusMessage(status, text, body, "Loading AI settings"));
+  if (result === "missing") {
+    return null;
   }
-
-  const message =
-    body && typeof body === "object"
-      ? (body as Record<string, unknown>).message
-      : null;
-  if (message == null) return null;
-  if (message === false || message === "") return null;
-  return parseSettingsMessage(message);
+  return parseSettingsMessage(result.settings);
 }
