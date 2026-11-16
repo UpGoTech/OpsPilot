@@ -12,7 +12,9 @@ import { useGatewayStore } from "../../src/stores/gateway";
 import { useLayoutStore } from "../../src/stores/layout";
 import { useSessionsStore } from "../../src/stores/sessions";
 import { useTabsStore } from "../../src/stores/tabs";
+import { useErpnextContext } from "./composables/useErpnextContext";
 import SideChat from "./components/SideChat.vue";
+import SideDisabledOverlay from "./components/SideDisabledOverlay.vue";
 import SideHeader from "./components/SideHeader.vue";
 
 const erpnext = useErpnextStore();
@@ -22,6 +24,7 @@ const sessions = useSessionsStore();
 const layout = useLayoutStore();
 const centerTabs = useCenterTabsStore();
 const sessionTabs = useTabsStore();
+const { isErpnextActive, siteHost, checking } = useErpnextContext();
 
 const showShell = computed(() => erpnext.bootPhase === "ready");
 const showLogin = computed(() => erpnext.bootPhase === "needs_login");
@@ -30,6 +33,16 @@ const showConnecting = computed(() => erpnext.bootPhase === "connecting");
 const showBootError = computed(() => erpnext.bootPhase === "error");
 const showLoading = computed(() => erpnext.bootPhase === "loading");
 const hasCenterTabs = computed(() => centerTabs.tabs.length > 0);
+
+/** Full-panel pause whenever a site is configured but the focused tab isn't it. */
+const showDisabledOverlay = computed(() => {
+  if (!erpnext.hasSiteUrl) return false;
+  if (showUrlGate.value || showLoading.value) return false;
+  if (checking.value) return false;
+  // Let Advanced settings / URL gate remain usable under the overlay path.
+  if (layout.settingsOpen || erpnext.bootPhase === "needs_url") return false;
+  return !isErpnextActive.value;
+});
 
 const connectGeneration = ref(0);
 
@@ -154,6 +167,35 @@ async function onRetry() {
   await connectAiFromSettings();
 }
 
+async function focusErpnextTab() {
+  const host = siteHost.value;
+  if (!host) {
+    erpnext.openUrlSettings();
+    return;
+  }
+  try {
+    const all = await chrome.tabs.query({});
+    const hit = all.find((t) => {
+      try {
+        return t.url && new URL(t.url).host.toLowerCase() === host;
+      } catch {
+        return false;
+      }
+    });
+    if (hit?.id != null) {
+      await chrome.tabs.update(hit.id, { active: true });
+      if (hit.windowId != null) {
+        await chrome.windows.update(hit.windowId, { focused: true });
+      }
+      return;
+    }
+  } catch {
+    // fall through
+  }
+  const url = erpnext.siteUrl.trim();
+  if (url) await chrome.tabs.create({ url });
+}
+
 onMounted(async () => {
   layout.agentOpen = true;
   centerTabs.hydrate();
@@ -172,6 +214,11 @@ onMounted(async () => {
       <div
         class="opspilot-sidepanel-shell relative flex h-full min-h-0 flex-col bg-white"
       >
+        <SideDisabledOverlay
+          v-if="showDisabledOverlay"
+          :site-host="siteHost"
+          @open-erpnext="focusErpnextTab"
+        />
         <!-- Ready shell: Leo-style chat -->
         <div
           v-show="showShell && !layout.settingsOpen"

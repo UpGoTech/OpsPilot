@@ -37,14 +37,95 @@ export function matchesErpnextSite(tabUrl: string, siteUrl: string): boolean {
   return tabHost === siteHost;
 }
 
+/** Shared across App + SideChat so listeners aren't duplicated. */
+const page = ref<ActivePage | null>(null);
+const checking = ref(true);
+let subscriberCount = 0;
+let siteUrlWatchStop: (() => void) | null = null;
+
+async function refresh() {
+  checking.value = true;
+  try {
+    const tabs = await chrome.tabs.query({
+      active: true,
+      lastFocusedWindow: true,
+    });
+    const tab = tabs[0];
+    if (!tab?.url || isRestrictedUrl(tab.url)) {
+      page.value = null;
+      return;
+    }
+    let host = tab.url;
+    try {
+      const parsed = new URL(tab.url);
+      host = parsed.host + parsed.pathname.replace(/\/$/, "");
+    } catch {
+      // keep raw
+    }
+    page.value = {
+      title: tab.title?.trim() || "This page",
+      url: tab.url,
+      host,
+    };
+  } catch {
+    page.value = null;
+  } finally {
+    checking.value = false;
+  }
+}
+
+function onActivated() {
+  void refresh();
+}
+
+function onUpdated(
+  _tabId: number,
+  changeInfo: chrome.tabs.TabChangeInfo,
+  tab: chrome.tabs.Tab,
+) {
+  if (changeInfo.status === "complete" || changeInfo.url) {
+    if (tab.active) void refresh();
+  }
+}
+
+function onFocusChanged() {
+  void refresh();
+}
+
+function startListening() {
+  if (subscriberCount === 0) {
+    void refresh();
+    chrome.tabs.onActivated.addListener(onActivated);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.windows.onFocusChanged.addListener(onFocusChanged);
+    const erpnext = useErpnextStore();
+    siteUrlWatchStop = watch(
+      () => erpnext.siteUrl,
+      () => {
+        void refresh();
+      },
+    );
+  }
+  subscriberCount += 1;
+}
+
+function stopListening() {
+  subscriberCount = Math.max(0, subscriberCount - 1);
+  if (subscriberCount === 0) {
+    chrome.tabs.onActivated.removeListener(onActivated);
+    chrome.tabs.onUpdated.removeListener(onUpdated);
+    chrome.windows.onFocusChanged.removeListener(onFocusChanged);
+    siteUrlWatchStop?.();
+    siteUrlWatchStop = null;
+  }
+}
+
 /**
  * Watches the focused window's active tab and compares it to the configured
- * ERPNext site URL. OpsPilot chat is "active" only while that host matches.
+ * ERPNext site URL. OpsPilot is active only while that host matches.
  */
 export function useErpnextContext() {
   const erpnext = useErpnextStore();
-  const page = ref<ActivePage | null>(null);
-  const checking = ref(true);
 
   const siteHost = computed(() => hostOf(erpnext.siteUrl) ?? "");
 
@@ -54,74 +135,13 @@ export function useErpnextContext() {
     return matchesErpnextSite(page.value.url, erpnext.siteUrl);
   });
 
-  async function refresh() {
-    checking.value = true;
-    try {
-      const tabs = await chrome.tabs.query({
-        active: true,
-        lastFocusedWindow: true,
-      });
-      const tab = tabs[0];
-      if (!tab?.url || isRestrictedUrl(tab.url)) {
-        page.value = null;
-        return;
-      }
-      let host = tab.url;
-      try {
-        const parsed = new URL(tab.url);
-        host = parsed.host + parsed.pathname.replace(/\/$/, "");
-      } catch {
-        // keep raw
-      }
-      page.value = {
-        title: tab.title?.trim() || "This page",
-        url: tab.url,
-        host,
-      };
-    } catch {
-      page.value = null;
-    } finally {
-      checking.value = false;
-    }
-  }
-
-  function onActivated() {
-    void refresh();
-  }
-
-  function onUpdated(
-    _tabId: number,
-    changeInfo: chrome.tabs.TabChangeInfo,
-    tab: chrome.tabs.Tab,
-  ) {
-    if (changeInfo.status === "complete" || changeInfo.url) {
-      if (tab.active) void refresh();
-    }
-  }
-
-  function onFocusChanged() {
-    void refresh();
-  }
-
   onMounted(() => {
-    void refresh();
-    chrome.tabs.onActivated.addListener(onActivated);
-    chrome.tabs.onUpdated.addListener(onUpdated);
-    chrome.windows.onFocusChanged.addListener(onFocusChanged);
+    startListening();
   });
 
   onUnmounted(() => {
-    chrome.tabs.onActivated.removeListener(onActivated);
-    chrome.tabs.onUpdated.removeListener(onUpdated);
-    chrome.windows.onFocusChanged.removeListener(onFocusChanged);
+    stopListening();
   });
-
-  watch(
-    () => erpnext.siteUrl,
-    () => {
-      void refresh();
-    },
-  );
 
   return {
     page,

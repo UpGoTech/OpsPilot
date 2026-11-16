@@ -256,23 +256,81 @@ html.opspilot-sidepanel body {
   border-color: #ebebeb;
 }
 
-.side-disabled-banner {
-  animation: side-fade-in 0.18s ease;
+.side-disabled-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 18px;
+  background: rgba(243, 246, 239, 0.72);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: side-fade-in 0.2s ease;
+}
+
+.side-disabled-overlay-card {
+  width: 100%;
+  max-width: 300px;
+  border-radius: 18px;
+  border: 1px solid #e4e8de;
+  background: rgba(255, 255, 255, 0.92);
+  padding: 22px 18px 18px;
+  text-align: center;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+}
+
+.side-disabled-kicker {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #7a8570;
+}
+
+.side-disabled-quote {
+  margin: 12px 0 0;
+  font-size: 15px;
+  font-weight: 560;
+  line-height: 1.45;
+  color: #1a1a1a;
+  cursor: pointer;
+  user-select: none;
+}
+
+.side-disabled-hint {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #6b6b6b;
+}
+
+.side-disabled-cta {
+  margin-top: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 36px;
+  border-radius: 999px;
+  background: #1a1a1a;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.side-disabled-cta:hover {
+  background: #000;
 }
 
 @keyframes side-fade-in {
   from {
     opacity: 0;
-    transform: translateY(-2px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
   }
-}
-
-html.opspilot-sidepanel .side-chat.is-erpnext-inactive .side-brand {
-  color: #6a6a6a;
 }
 
 /* Restyle shared Transcript inside the side panel */
