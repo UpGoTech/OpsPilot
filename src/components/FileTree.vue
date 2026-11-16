@@ -23,7 +23,7 @@ async function onActivate(entry: FsEntry) {
       {{ files.error }}
     </div>
     <div v-else-if="!files.rootPath" class="px-2 py-3 text-ink-gray-5">
-      Connect to a gateway to browse its workspace.
+      Sign in to browse the workspace.
     </div>
     <ul v-else class="space-y-0.5">
       <li>

@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { Button, DesktopShell, FrappeUIProvider } from "frappe-ui";
 import AgentPanel from "./components/shell/AgentPanel.vue";
 import AppTopBar from "./components/shell/AppTopBar.vue";
 import CenterWorkspace from "./components/shell/CenterWorkspace.vue";
+import ConnectingView from "./views/ConnectingView.vue";
 import LoginView from "./views/LoginView.vue";
 import SettingsView from "./views/SettingsView.vue";
 import { useCenterTabsStore } from "./stores/centerTabs";
@@ -29,35 +30,106 @@ const showConnecting = computed(() => erpnext.bootPhase === "connecting");
 const showBootError = computed(() => erpnext.bootPhase === "error");
 const showLoading = computed(() => erpnext.bootPhase === "loading");
 
-async function connectHermesFromSettings() {
-  erpnext.markConnecting();
+/** Bumps on cancel / new attempt so late async work is ignored. */
+const connectGeneration = ref(0);
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      const msg =
+        label.startsWith("AI") || label.includes("gateway")
+          ? "Could not connect"
+          : "Could not reach ERPNext";
+      reject(new Error(msg));
+    }, ms);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function isStale(gen: number) {
+  return gen !== connectGeneration.value;
+}
+
+async function connectAiFromSettings() {
+  const gen = ++connectGeneration.value;
+  // Login already succeeded. Next: OpsPilot app → user AI settings → gateway.
+  erpnext.markConnecting(
+    "Checking OpsPilot…",
+    "Confirming this site has the OpsPilot app.",
+  );
+
   try {
-    const config = await erpnext.fetchSettings();
+    const config = await withTimeout(
+      erpnext.fetchSettings(),
+      10_000,
+      "Loading AI settings",
+    );
+    if (isStale(gen)) return;
     if (!config) {
       return;
     }
+
+    erpnext.setConnectProgress(48, "Preparing connection…", "");
     await gateway.load();
     chat.ensureListener();
+    if (isStale(gen)) return;
 
     let toConnect = { ...config };
     if (toConnect.authMode === "password" && toConnect.password?.trim()) {
-      toConnect = await gateway.signIn(toConnect);
+      erpnext.setConnectProgress(62, "Signing in to AI…", "");
+      toConnect = await withTimeout(
+        gateway.signIn(toConnect),
+        12_000,
+        "AI gateway sign-in",
+      );
     } else {
       await gateway.save({ ...toConnect, password: "" });
     }
-    await gateway.connect({ ...toConnect, password: "" });
+    if (isStale(gen)) return;
 
+    erpnext.setConnectProgress(78, "Opening AI session…", "");
+    await withTimeout(
+      gateway.connect({ ...toConnect, password: "" }),
+      15_000,
+      "AI gateway connect",
+    );
+    if (isStale(gen)) return;
+
+    erpnext.setConnectProgress(88, "Finishing up…", "Loading your sessions.");
     for (let i = 0; i < 40 && !gateway.isConnected; i++) {
+      if (isStale(gen)) return;
       await new Promise((r) => setTimeout(r, 100));
     }
+    if (isStale(gen)) return;
+
     if (gateway.isConnected) {
       await sessions.refresh();
+      if (isStale(gen)) return;
       await sessionTabs.restoreAfterSessionsLoad();
       await centerTabs.restoreActiveContent();
+    } else if (!gateway.lastError) {
+      throw new Error("Could not connect");
     }
+
+    if (isStale(gen)) return;
+    erpnext.setConnectProgress(100, "Ready", "");
     erpnext.markReady();
     layout.closeSettings();
   } catch (error) {
+    if (isStale(gen)) return;
     const message = error instanceof Error ? error.message : String(error);
     if (erpnext.bootPhase !== "needs_login") {
       erpnext.markError(message);
@@ -65,18 +137,29 @@ async function connectHermesFromSettings() {
   }
 }
 
+async function onCancelConnect() {
+  connectGeneration.value += 1;
+  try {
+    await gateway.disconnect();
+  } catch {
+    // ignore
+  }
+  erpnext.markNeedsLogin();
+}
+
 async function onLoginSuccess() {
-  await connectHermesFromSettings();
+  await connectAiFromSettings();
 }
 
 async function onUrlSaved() {
   layout.closeSettings();
   if (erpnext.bootPhase === "connecting" && erpnext.loggedIn) {
-    await connectHermesFromSettings();
+    await connectAiFromSettings();
   }
 }
 
 async function onLogout() {
+  connectGeneration.value += 1;
   try {
     await gateway.disconnect();
   } catch {
@@ -91,7 +174,7 @@ async function onRetry() {
     erpnext.markNeedsLogin();
     return;
   }
-  await connectHermesFromSettings();
+  await connectAiFromSettings();
 }
 
 onMounted(async () => {
@@ -100,7 +183,7 @@ onMounted(async () => {
   chat.ensureListener();
   await erpnext.load();
   if (erpnext.bootPhase === "connecting" && erpnext.loggedIn) {
-    await connectHermesFromSettings();
+    await connectAiFromSettings();
   }
 });
 </script>
@@ -185,22 +268,28 @@ onMounted(async () => {
         </div>
 
         <!-- Boot: connecting -->
-        <div
+        <ConnectingView
           v-else-if="showConnecting"
-          class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 bg-white px-6 text-sm text-ink-gray-6"
-        >
-          <div class="text-sm font-medium text-ink-gray-8">Connecting…</div>
-          <p>Loading your Hermes settings from ERPNext.</p>
-        </div>
+          :progress="erpnext.connectProgress"
+          :status="erpnext.connectStatus || 'Connecting…'"
+          :detail="erpnext.connectDetail"
+          @cancel="onCancelConnect"
+        />
 
-        <!-- Boot: error (missing DocType / Hermes) -->
+        <!-- Boot: error (unsupported site / not permitted / connect) -->
         <div
           v-else-if="showBootError"
           class="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 bg-white px-6"
         >
           <div class="max-w-md text-center">
             <div class="text-sm font-medium text-ink-gray-8">
-              {{ erpnext.settingsMissing ? "Settings missing" : "Could not connect" }}
+              {{
+                erpnext.accessError === "unsupported_site"
+                  ? "Site not supported"
+                  : erpnext.accessError === "not_permitted"
+                    ? "Not permitted"
+                    : "Could not connect"
+              }}
             </div>
             <p class="mt-2 text-sm text-ink-red-4">
               {{ erpnext.lastError || gateway.lastError || "Something went wrong." }}

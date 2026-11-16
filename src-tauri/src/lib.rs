@@ -79,6 +79,17 @@ async fn erpnext_logout(
 }
 
 #[tauri::command]
+async fn erpnext_probe_support(app: tauri::AppHandle) -> Result<bool, String> {
+    let config = erpnext::load_config(&app).map_err(|e| e.to_string())?;
+    if config.site_url.trim().is_empty() {
+        return Err("ERPNext site URL is not configured.".into());
+    }
+    erpnext::probe_opspilot_support(&config.site_url)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn erpnext_fetch_opspilot_settings(
     app: tauri::AppHandle,
     erpnext_state: State<'_, ErpnextState>,
@@ -241,6 +252,7 @@ pub fn run() {
             get_erpnext_session,
             erpnext_login,
             erpnext_logout,
+            erpnext_probe_support,
             erpnext_fetch_opspilot_settings,
             get_connection,
             save_connection,

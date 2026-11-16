@@ -46,7 +46,7 @@ watch(
           class="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-ink-gray-8"
         >{{ files.preview }}</pre>
         <div v-else class="mt-24 text-center text-sm text-ink-gray-5">
-          Browse the remote Hermes workspace and open a text file to preview it.
+          Browse the remote workspace and open a text file to preview it.
         </div>
       </div>
     </section>

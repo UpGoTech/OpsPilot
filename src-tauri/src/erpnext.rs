@@ -4,7 +4,9 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::error::Error as StdError;
 use std::fs;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
@@ -24,12 +26,15 @@ pub enum ErpnextError {
     Url(#[from] url::ParseError),
 }
 
-/// Persisted locally — site URL only.
+/// Persisted locally — site URL + last username (never password / sid).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErpnextConfig {
     #[serde(default)]
     pub site_url: String,
+    /// Last ERPNext username typed on the login screen (convenience only).
+    #[serde(default)]
+    pub last_username: String,
 }
 
 /// Process-lifetime session. Never written to disk.
@@ -94,13 +99,92 @@ impl ErpnextState {
     }
 }
 
-fn client() -> Result<reqwest::Client, ErpnextError> {
+/// macOS getaddrinfo often fails for `sitename.localhost` (curl still works).
+/// Map those names to 127.0.0.1 so the HTTP Host header stays the site name.
+#[derive(Debug, Default, Clone)]
+struct LocalFriendlyResolver;
+
+impl reqwest::dns::Resolve for LocalFriendlyResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let host = name.as_str();
+            if is_localhost_name(host) {
+                let addrs: Vec<SocketAddr> = vec![
+                    SocketAddr::from(([127, 0, 0, 1], 0)),
+                    SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], 0)),
+                ];
+                return Ok(Box::new(addrs.into_iter()) as Box<dyn Iterator<Item = SocketAddr> + Send>);
+            }
+            // Cap DNS so bad hostnames cannot hang the UI for minutes.
+            let lookup = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                tokio::net::lookup_host((host, 0)),
+            )
+            .await
+            .map_err(|_| {
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "DNS lookup timed out",
+                )) as Box<dyn StdError + Send + Sync>
+            })?
+            .map_err(|e| Box::new(e) as Box<dyn StdError + Send + Sync>)?;
+            let addrs: Vec<SocketAddr> = lookup.collect();
+            Ok(Box::new(addrs.into_iter()) as Box<dyn Iterator<Item = SocketAddr> + Send>)
+        })
+    }
+}
+
+fn client_with_timeout(secs: u64) -> Result<reqwest::Client, ErpnextError> {
     reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(secs.min(5).max(2)))
+        .timeout(std::time::Duration::from_secs(secs))
         .redirect(reqwest::redirect::Policy::none())
         .cookie_store(false)
+        .dns_resolver(Arc::new(LocalFriendlyResolver))
         .build()
         .map_err(|e| ErpnextError::Message(e.to_string()))
+}
+
+fn client() -> Result<reqwest::Client, ErpnextError> {
+    // Keep ERPNext calls snappy — never sit on DNS/connect for minutes.
+    client_with_timeout(8)
+}
+
+fn probe_client() -> Result<reqwest::Client, ErpnextError> {
+    client_with_timeout(4)
+}
+
+fn http_error(_err: reqwest::Error, _url: &str) -> ErpnextError {
+    ErpnextError::Message("Could not reach ERPNext".into())
+}
+
+async fn with_request_deadline<T, E>(
+    fut: impl std::future::Future<Output = Result<T, E>>,
+    secs: u64,
+) -> Result<T, ErpnextError>
+where
+    E: Into<ErpnextError>,
+{
+    match tokio::time::timeout(std::time::Duration::from_secs(secs), fut).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(e.into()),
+        Err(_) => Err(ErpnextError::Message("Could not reach ERPNext".into())),
+    }
+}
+
+fn is_localhost_name(host: &str) -> bool {
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    h == "localhost" || h.ends_with(".localhost")
+}
+
+fn site_api_url(site_url: &str, path: &str) -> Result<(String, String), ErpnextError> {
+    let site_url = normalize_site_url(site_url)?;
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    Ok((format!("{site_url}{path}"), site_url))
 }
 
 pub fn normalize_site_url(raw: &str) -> Result<String, ErpnextError> {
@@ -111,7 +195,14 @@ pub fn normalize_site_url(raw: &str) -> Result<String, ErpnextError> {
     let with_scheme = if trimmed.contains("://") {
         trimmed.to_string()
     } else {
-        format!("https://{trimmed}")
+        // Local bench sites are almost always HTTP; production defaults to HTTPS.
+        let host_only = trimmed.split('/').next().unwrap_or(trimmed);
+        let host = host_only.split(':').next().unwrap_or(host_only);
+        if is_localhost_name(host) {
+            format!("http://{trimmed}")
+        } else {
+            format!("https://{trimmed}")
+        }
     };
     let mut parsed = Url::parse(&with_scheme)
         .map_err(|_| ErpnextError::Message(format!("Invalid ERPNext URL: {trimmed}")))?;
@@ -195,6 +286,35 @@ fn extract_sid_from_set_cookie(headers: &reqwest::header::HeaderMap) -> Option<S
     None
 }
 
+fn looks_like_html(text: &str) -> bool {
+    let t = text.trim_start().to_ascii_lowercase();
+    t.starts_with("<!doctype") || t.starts_with("<html") || t.contains("<center><h1>")
+}
+
+/// Turn proxy/HTML failure bodies into a short human message (never dump raw HTML).
+fn http_status_message(status: u16, text: &str, body: &Value, action: &str) -> String {
+    if let Some(msg) = frappe_message(body) {
+        return msg;
+    }
+    match status {
+        502 | 503 | 504 => {
+            format!("{action} failed: the site is temporarily unavailable (HTTP {status})")
+        }
+        401 | 403 if action == "Login" => "Invalid login credentials.".into(),
+        _ if looks_like_html(text) || text.trim().is_empty() => {
+            format!("{action} failed (HTTP {status})")
+        }
+        _ => {
+            let snippet: String = text.chars().take(160).collect();
+            if looks_like_html(&snippet) {
+                format!("{action} failed (HTTP {status})")
+            } else {
+                format!("{action} failed (HTTP {status}): {snippet}")
+            }
+        }
+    }
+}
+
 fn frappe_message(body: &Value) -> Option<String> {
     body.get("message")
         .and_then(|m| {
@@ -244,7 +364,6 @@ pub async fn login(
     pwd: &str,
     state: &ErpnextState,
 ) -> Result<ErpnextSessionInfo, ErpnextError> {
-    let base = normalize_site_url(site_url)?;
     let usr = usr.trim();
     if usr.is_empty() {
         return Err(ErpnextError::Message("Username is required".into()));
@@ -253,19 +372,25 @@ pub async fn login(
         return Err(ErpnextError::Message("Password is required".into()));
     }
 
-    let url = format!("{base}/api/method/login");
+    let (url, base) = site_api_url(site_url, "/api/method/login")?;
     // Classic Frappe login accepts form-encoded usr/pwd (also works with JSON on newer sites).
-    let response = client()?
-        .post(&url)
-        .header("Accept", "application/json")
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(format!(
-            "usr={}&pwd={}",
-            urlencoding_encode(usr),
-            urlencoding_encode(pwd)
-        ))
-        .send()
-        .await?;
+    let response = with_request_deadline(
+        client()?.post(&url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(format!(
+                "usr={}&pwd={}",
+                urlencoding_encode(usr),
+                urlencoding_encode(pwd)
+            ))
+            .send(),
+        8,
+    )
+    .await
+    .map_err(|e| match e {
+        ErpnextError::Http(err) => http_error(err, &base),
+        other => other,
+    })?;
 
     let status = response.status().as_u16();
     let headers = response.headers().clone();
@@ -273,13 +398,7 @@ pub async fn login(
     let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
 
     if !(200..300).contains(&status) {
-        let msg = frappe_message(&body).unwrap_or_else(|| {
-            if text.trim().is_empty() {
-                format!("Login failed (HTTP {status})")
-            } else {
-                text.chars().take(200).collect()
-            }
-        });
+        let msg = http_status_message(status, &text, &body, "Login");
         state.clear();
         return Err(ErpnextError::Message(msg));
     }
@@ -325,10 +444,9 @@ pub async fn logout(site_url: &str, state: &ErpnextState) -> Result<(), ErpnextE
     let Some(sid) = sid else {
         return Ok(());
     };
-    let Ok(base) = normalize_site_url(site_url) else {
+    let Ok((url, _)) = site_api_url(site_url, "/api/method/logout") else {
         return Ok(());
     };
-    let url = format!("{base}/api/method/logout");
     let _ = client()?
         .get(&url)
         .header("Accept", "application/json")
@@ -349,25 +467,116 @@ pub fn session_info(site_url: &str, state: &ErpnextState) -> ErpnextSessionInfo 
     }
 }
 
+fn looks_like_app_missing(status: u16, text: &str, body: &Value) -> bool {
+    if status == 404 {
+        return true;
+    }
+    let blob = format!("{text}{body}");
+    let lower = blob.to_ascii_lowercase();
+    if lower.contains("failed to get method") || lower.contains("attributeerror") {
+        return true;
+    }
+    if lower.contains("opspilot_frappe")
+        && (lower.contains("not installed")
+            || lower.contains("not found")
+            || lower.contains("no module")
+            || lower.contains("does not exist")
+            || status == 417
+            || status == 500)
+    {
+        return true;
+    }
+    false
+}
+
+fn site_unsupported_message(site_url: &str) -> String {
+    format!("This site does not support OpsPilot ({site_url}). Install the OpsPilot app on this site.")
+}
+
+/// Fast probe — works without login. Frappe returns 417 + "not installed" when the app is missing.
+pub async fn probe_opspilot_support(site_url: &str) -> Result<bool, ErpnextError> {
+    let (url, base) = site_api_url(site_url, "/api/method/opspilot_frappe.api.ping")?;
+    let response = with_request_deadline(
+        probe_client()?
+            .get(&url)
+            .header("Accept", "application/json")
+            .send(),
+        5,
+    )
+    .await
+    .map_err(|e| match e {
+        ErpnextError::Http(err) => http_error(err, &base),
+        other => other,
+    })?;
+
+    let status = response.status().as_u16();
+    let text = response.text().await.unwrap_or_default();
+    let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+
+    if (200..300).contains(&status) {
+        let message = body.get("message").cloned().unwrap_or(Value::Null);
+        if message.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return Ok(true);
+        }
+        // Unexpected 200 payload — treat as supported so settings fetch can decide.
+        return Ok(true);
+    }
+
+    if looks_like_app_missing(status, &text, &body)
+        || text.to_ascii_lowercase().contains("not installed")
+    {
+        return Ok(false);
+    }
+
+    // Auth required on some stacks — not the same as missing app.
+    if status == 401 || status == 403 {
+        return Ok(true);
+    }
+
+    Err(ErpnextError::Message(http_status_message(
+        status, &text, &body, "OpsPilot check",
+    )))
+}
+
+pub async fn ensure_opspilot_installed(site_url: &str) -> Result<(), ErpnextError> {
+    let base = normalize_site_url(site_url)?;
+    match probe_opspilot_support(&base).await? {
+        true => Ok(()),
+        false => Err(ErpnextError::Message(site_unsupported_message(&base))),
+    }
+}
+
 pub async fn fetch_opspilot_settings(
     site_url: &str,
     state: &ErpnextState,
 ) -> Result<Option<OpsPilotSettingsPayload>, ErpnextError> {
-    let base = normalize_site_url(site_url)?;
+    ensure_opspilot_installed(site_url).await?;
+
     let sid = state.sid().ok_or_else(|| {
         ErpnextError::Message("Not logged into ERPNext. Sign in again.".into())
     })?;
 
-    let url = format!("{base}/api/method/opspilot_frappe.api.get_my_opspilot_settings");
-    let response = client()?
-        .get(&url)
-        .header("Accept", "application/json")
-        .header("Cookie", format!("sid={sid}"))
-        .send()
-        .await?;
+    let (url, base) = site_api_url(
+        site_url,
+        "/api/method/opspilot_frappe.api.get_my_opspilot_settings",
+    )?;
+    let response = with_request_deadline(
+        client()?
+            .get(&url)
+            .header("Accept", "application/json")
+            .header("Cookie", format!("sid={sid}"))
+            .send(),
+        8,
+    )
+    .await
+    .map_err(|e| match e {
+        ErpnextError::Http(err) => http_error(err, &base),
+        other => other,
+    })?;
 
     let status = response.status().as_u16();
     let text = response.text().await.unwrap_or_default();
+    let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
 
     if status == 401 || status == 403 {
         state.clear();
@@ -377,22 +586,13 @@ pub async fn fetch_opspilot_settings(
     }
 
     if !(200..300).contains(&status) {
-        let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-        let msg = frappe_message(&body).unwrap_or_else(|| {
-            format!("Failed to load OpsPilot Settings (HTTP {status})")
-        });
-        // App missing often surfaces as 404 / method not found.
-        if text.contains("opspilot_frappe") || text.contains("App") || status == 404 {
-            return Err(ErpnextError::Message(format!(
-                "{msg}. Is the opspilot_frappe app installed on this site?"
-            )));
+        if looks_like_app_missing(status, &text, &body) {
+            return Err(ErpnextError::Message(site_unsupported_message(&base)));
         }
-        return Err(ErpnextError::Message(msg));
+        return Err(ErpnextError::Message(http_status_message(
+            status, &text, &body, "Loading AI settings",
+        )));
     }
-
-    let body: Value = serde_json::from_str(&text).map_err(|_| {
-        ErpnextError::Message("ERPNext returned non-JSON from get_my_opspilot_settings".into())
-    })?;
 
     // Frappe wraps whitelist return values under "message".
     let message = body.get("message").cloned().unwrap_or(Value::Null);

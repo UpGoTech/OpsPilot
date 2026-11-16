@@ -9,11 +9,19 @@ from frappe import _
 
 
 @frappe.whitelist()
+def ping():
+	"""Cheap probe so OpsPilot can confirm this site has the OpsPilot app."""
+	return {"ok": True, "app": "opspilot_frappe"}
+
+
+@frappe.whitelist()
 def get_my_opspilot_settings():
 	"""Return the signed-in user's OpsPilot Settings, including Password fields.
 
 	Password values are unavailable via /api/resource (masked as ******), so the
 	desktop client must call this method after /api/method/login.
+
+	Returns None when the user has no OpsPilot Settings row (not permitted to use AI).
 	"""
 	user = frappe.session.user
 	if not user or user == "Guest":

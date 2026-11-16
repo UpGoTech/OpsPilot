@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref } from "vue";
+import { nextTick, onMounted, reactive, ref, watch } from "vue";
 import { Button, FormControl } from "frappe-ui";
 import { useErpnextStore } from "../stores/erpnext";
 
@@ -16,16 +16,63 @@ const form = reactive({
 });
 const submitting = ref(false);
 const message = ref<string | null>(null);
+const pwdField = ref<HTMLElement | null>(null);
+
+function hydrateUsername() {
+  if (!form.usr.trim() && erpnext.lastUsername.trim()) {
+    form.usr = erpnext.lastUsername.trim();
+  }
+}
+
+watch(
+  () => erpnext.lastUsername,
+  () => hydrateUsername(),
+  { immediate: true },
+);
+
+onMounted(async () => {
+  hydrateUsername();
+  await nextTick();
+  // If username is remembered, jump focus to password.
+  if (form.usr.trim()) {
+    const root = pwdField.value;
+    const input = root?.querySelector?.("input") as HTMLInputElement | null;
+    input?.focus();
+  }
+});
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(new Error("Could not reach ERPNext"));
+    }, ms);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 async function onSubmit() {
   submitting.value = true;
   message.value = null;
   try {
-    await erpnext.login(form.usr, form.pwd);
+    const session = await withTimeout(erpnext.login(form.usr, form.pwd), 10_000);
     form.pwd = "";
+    if (!session) {
+      message.value = "Sign in failed. Check your username and password.";
+      return;
+    }
     emit("success");
   } catch (error) {
     form.pwd = "";
+    // Stay on the login screen for bad credentials / network errors.
     message.value = error instanceof Error ? error.message : String(error);
   } finally {
     submitting.value = false;
@@ -52,12 +99,14 @@ async function onSubmit() {
           placeholder="you@company.com"
           autocomplete="username"
         />
-        <FormControl
-          v-model="form.pwd"
-          type="password"
-          label="Password"
-          autocomplete="current-password"
-        />
+        <div ref="pwdField">
+          <FormControl
+            v-model="form.pwd"
+            type="password"
+            label="Password"
+            autocomplete="current-password"
+          />
+        </div>
 
         <div v-if="message" class="text-sm text-ink-red-4">
           {{ message }}

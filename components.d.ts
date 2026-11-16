@@ -19,6 +19,7 @@ declare module 'vue' {
     FileTree: typeof import('./src/components/FileTree.vue')['default']
     FileTreeNode: typeof import('./src/components/FileTreeNode.vue')['default']
     IconButton: typeof import('./src/components/shell/IconButton.vue')['default']
+    InlineHtmlPreview: typeof import('./src/components/InlineHtmlPreview.vue')['default']
     MarkdownBody: typeof import('./src/components/MarkdownBody.vue')['default']
     PdfArtifactCard: typeof import('./src/components/PdfArtifactCard.vue')['default']
     ResizeHandle: typeof import('./src/components/shell/ResizeHandle.vue')['default']

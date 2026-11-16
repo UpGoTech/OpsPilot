@@ -3,9 +3,10 @@ export type GatewayState = "idle" | "connecting" | "open" | "closed" | "error";
 /** Desktop remote auth choice: session token paste vs sign-in. */
 export type AuthMode = "auto" | "token" | "password";
 
-/** Persisted locally — ERPNext site URL only. */
+/** Persisted locally — ERPNext site URL + last username (never password). */
 export interface ErpnextConfig {
   siteUrl: string;
+  lastUsername?: string;
 }
 
 /** In-memory ERPNext session info (sid never leaves Rust). */

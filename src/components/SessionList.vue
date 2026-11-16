@@ -74,7 +74,7 @@ function menuOptions(session: SessionSummary) {
 async function confirmDelete(session: SessionSummary) {
   const title = session.title || "Untitled";
   const ok = window.confirm(
-    `Delete “${title}”? This permanently removes the session from the gateway.`,
+    `Delete “${title}”? This permanently removes the session.`,
   );
   if (!ok) return;
   actionError.value = null;
@@ -176,7 +176,7 @@ async function selectSession(session: SessionSummary) {
         v-if="!gateway.isConnected"
         class="px-2.5 py-3 text-[12px] text-[#9a9a9a]"
       >
-        Connect to a gateway to load history.
+        Sign in to load history.
       </div>
       <div
         v-else-if="sessions.loading"

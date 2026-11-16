@@ -59,7 +59,7 @@ async function copyReply(text: string) {
     >
       <div class="text-[14px] font-medium text-[#3c3c3c]">New chat</div>
       <p class="mt-1.5 max-w-[260px] text-[13px] leading-relaxed text-[#8a8a8a]">
-        Ask Hermes to work with your remote workspace, files, and ERPNext.
+        Ask AI to work with your remote workspace, files, and ERPNext.
       </p>
     </div>
 

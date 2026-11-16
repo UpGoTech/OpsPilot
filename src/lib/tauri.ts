@@ -27,6 +27,10 @@ export function erpnextLogout() {
   return invoke<void>("erpnext_logout");
 }
 
+export function erpnextProbeSupport() {
+  return invoke<boolean>("erpnext_probe_support");
+}
+
 export function erpnextFetchOpspilotSettings() {
   return invoke<OpsPilotSettingsPayload | null>("erpnext_fetch_opspilot_settings");
 }

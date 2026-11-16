@@ -68,14 +68,14 @@ async function onSave() {
         Settings
       </h1>
       <p class="mt-1 text-sm text-ink-gray-6">
-        Connect OpsPilot to your ERPNext site. Hermes gateway credentials are
-        managed per user in ERPNext Desk.
+        Connect OpsPilot to your ERPNext site. AI access is managed per user in
+        ERPNext Desk.
       </p>
     </div>
     <div v-else class="mb-6">
       <p class="text-sm text-ink-gray-6">
-        Connect OpsPilot to your ERPNext site. Hermes gateway credentials are
-        managed per user in ERPNext Desk
+        Connect OpsPilot to your ERPNext site. AI access is managed per user in
+        ERPNext Desk
         (<span class="font-medium text-ink-gray-8">OpsPilot Settings</span>).
       </p>
     </div>
@@ -92,7 +92,9 @@ async function onSave() {
       <p class="text-xs text-ink-gray-5">
         After you save, you will sign in with your ERPNext username and
         password. The session is not kept when the app closes — you sign in each
-        launch.
+        launch. Local bench example:
+        <span class="font-medium text-ink-gray-7">http://sitename.localhost</span>
+        (use <span class="font-medium text-ink-gray-7">http</span>, not https).
       </p>
 
       <div
