@@ -289,14 +289,36 @@ html.opspilot-sidepanel body {
   color: #7a8570;
 }
 
+.side-disabled-mood {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 8px;
+  color: #6a7460;
+}
+
+.side-disabled-overlay.is-sad .side-disabled-mood {
+  color: #8a7a4a;
+}
+
+.side-disabled-overlay.is-cry .side-disabled-mood {
+  color: #7a6a8a;
+}
+
+.side-disabled-overlay.is-login .side-disabled-mood {
+  color: #5a6a7a;
+}
+
 .side-disabled-quote {
   margin: 12px 0 0;
   font-size: 15px;
   font-weight: 560;
   line-height: 1.45;
   color: #1a1a1a;
-  cursor: pointer;
   user-select: none;
+}
+
+.side-disabled-quote.is-clickable {
+  cursor: pointer;
 }
 
 .side-disabled-hint {

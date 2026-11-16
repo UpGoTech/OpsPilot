@@ -24,7 +24,7 @@ const sessions = useSessionsStore();
 const layout = useLayoutStore();
 const centerTabs = useCenterTabsStore();
 const sessionTabs = useTabsStore();
-const { isErpnextActive, siteHost, checking } = useErpnextContext();
+const { siteGate, siteHost, checking } = useErpnextContext();
 
 const showShell = computed(() => erpnext.bootPhase === "ready");
 const showLogin = computed(() => erpnext.bootPhase === "needs_login");
@@ -34,14 +34,19 @@ const showBootError = computed(() => erpnext.bootPhase === "error");
 const showLoading = computed(() => erpnext.bootPhase === "loading");
 const hasCenterTabs = computed(() => centerTabs.tabs.length > 0);
 
-/** Full-panel pause whenever a site is configured but the focused tab isn't it. */
+/**
+ * Overlay when the focused OpsPilot site isn't ready:
+ * wrong tab / not logged in / app missing / user not enabled.
+ * Hide while editing the site URL or while the sign-in form is showing.
+ */
 const showDisabledOverlay = computed(() => {
   if (!erpnext.hasSiteUrl) return false;
   if (showUrlGate.value || showLoading.value) return false;
   if (checking.value) return false;
-  // Let Advanced settings / URL gate remain usable under the overlay path.
   if (layout.settingsOpen || erpnext.bootPhase === "needs_url") return false;
-  return !isErpnextActive.value;
+  // Let the sign-in form handle not_logged_in once the user chooses Sign in.
+  if (showLogin.value && siteGate.value.status === "not_logged_in") return false;
+  return siteGate.value.status !== "ok";
 });
 
 const connectGeneration = ref(0);
@@ -216,9 +221,11 @@ onMounted(async () => {
       >
         <SideDisabledOverlay
           v-if="showDisabledOverlay"
+          :gate="siteGate"
           :site-host="siteHost"
-          @open-erpnext="focusErpnextTab"
+          @open-site="focusErpnextTab"
           @change-site="erpnext.openUrlSettings()"
+          @sign-in="erpnext.markNeedsLogin()"
         />
         <!-- Ready shell: Leo-style chat -->
         <div

@@ -1,7 +1,7 @@
 /**
  * Service worker for Chromium (Chrome / Brave / Edge).
  * Opens the side panel on action click and greys the toolbar title when the
- * focused tab is not the configured ERPNext site.
+ * focused tab is not the configured OpsPilot site.
  */
 
 const CONFIG_KEY = "opspilot.erpnext";
@@ -36,7 +36,7 @@ async function configuredSiteHost(): Promise<string | null> {
 async function refreshActionState() {
   const siteHost = await configuredSiteHost();
   if (!siteHost) {
-    await chrome.action.setTitle({ title: "OpsPilot — set ERPNext site URL" });
+    await chrome.action.setTitle({ title: "OpsPilot — set site URL" });
     await chrome.action.setBadgeText({ text: "" });
     return;
   }
@@ -59,7 +59,7 @@ async function refreshActionState() {
       await chrome.action.setBadgeText({ text: "" });
     } else {
       await chrome.action.setTitle({
-        title: "OpsPilot — paused (open your ERPNext tab)",
+        title: "OpsPilot — paused (open your OpsPilot site)",
       });
       await chrome.action.setBadgeText({ text: "—" });
       await chrome.action.setBadgeBackgroundColor({ color: "#9aa39a" });

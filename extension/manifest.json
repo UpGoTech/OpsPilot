@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OpsPilot",
-  "description": "ERPNext-gated AI side panel — same gateway protocol as OpsPilot desktop.",
+  "description": "OpsPilot side panel — AI for your OpsPilot site, Chrome / Brave / Edge.",
   "version": "0.2.0",
   "action": {
     "default_title": "Open OpsPilot",
@@ -30,7 +30,8 @@
     "storage",
     "downloads",
     "tabs",
-    "windows"
+    "windows",
+    "cookies"
   ],
   "host_permissions": [
     "http://*/*",

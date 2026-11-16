@@ -44,7 +44,7 @@ onMounted(async () => {
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = window.setTimeout(() => {
-      reject(new Error("Could not reach ERPNext"));
+      reject(new Error("Could not reach OpsPilot site"));
     }, ms);
     promise.then(
       (value) => {
@@ -87,7 +87,7 @@ async function onSubmit() {
         Sign in
       </h1>
       <p class="mt-1 text-sm text-ink-gray-6">
-        Use your ERPNext account for
+        Use your OpsPilot account for
         <span class="font-medium text-ink-gray-8">{{ erpnext.siteUrl }}</span>
       </p>
 
@@ -127,7 +127,7 @@ async function onSubmit() {
         class="mt-6 text-sm text-ink-gray-6 underline-offset-2 hover:text-ink-gray-8 hover:underline"
         @click="emit('changeSite')"
       >
-        Change ERPNext site URL
+        Change OpsPilot site URL
       </button>
     </div>
   </div>

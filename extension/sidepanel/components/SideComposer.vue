@@ -15,7 +15,7 @@ const props = withDefaults(
   defineProps<{
     placeholder?: string;
     seed?: string;
-    /** When true (non-ERPNext tab), block send / attach. */
+    /** When true (OpsPilot site gate not ok), block send / attach. */
     disabled?: boolean;
   }>(),
   {
@@ -183,7 +183,7 @@ defineExpose({
         class="side-composer-input"
         :placeholder="
           disabled
-            ? 'Switch to your ERPNext tab to chat'
+            ? 'Switch to your OpsPilot site to chat'
             : placeholder
         "
         :disabled="!inputEnabled"
