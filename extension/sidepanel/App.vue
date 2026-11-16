@@ -1,8 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { Button, DesktopShell, FrappeUIProvider } from "frappe-ui";
-import AgentPanel from "../../src/components/shell/AgentPanel.vue";
-import AppTopBar from "../../src/components/shell/AppTopBar.vue";
 import CenterWorkspace from "../../src/components/shell/CenterWorkspace.vue";
 import ConnectingView from "../../src/views/ConnectingView.vue";
 import LoginView from "../../src/views/LoginView.vue";
@@ -14,6 +12,8 @@ import { useGatewayStore } from "../../src/stores/gateway";
 import { useLayoutStore } from "../../src/stores/layout";
 import { useSessionsStore } from "../../src/stores/sessions";
 import { useTabsStore } from "../../src/stores/tabs";
+import SideChat from "./components/SideChat.vue";
+import SideHeader from "./components/SideHeader.vue";
 
 const erpnext = useErpnextStore();
 const gateway = useGatewayStore();
@@ -33,11 +33,7 @@ const hasCenterTabs = computed(() => centerTabs.tabs.length > 0);
 
 const connectGeneration = ref(0);
 
-function withTimeout<T>(
-  promise: Promise<T>,
-  ms: number,
-  _label: string,
-): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = window.setTimeout(() => {
       reject(new Error("Could not connect"));
@@ -59,11 +55,6 @@ function isStale(gen: number) {
   return gen !== connectGeneration.value;
 }
 
-function fitSidePanelLayout() {
-  layout.agentOpen = true;
-  layout.setAgentWidth(Math.max(320, window.innerWidth || 420));
-}
-
 async function connectAiFromSettings() {
   const gen = ++connectGeneration.value;
   erpnext.markConnecting(
@@ -72,11 +63,7 @@ async function connectAiFromSettings() {
   );
 
   try {
-    const config = await withTimeout(
-      erpnext.fetchSettings(),
-      10_000,
-      "Loading AI settings",
-    );
+    const config = await withTimeout(erpnext.fetchSettings(), 10_000);
     if (isStale(gen)) return;
     if (!config) return;
 
@@ -88,22 +75,14 @@ async function connectAiFromSettings() {
     let toConnect = { ...config };
     if (toConnect.authMode === "password" && toConnect.password?.trim()) {
       erpnext.setConnectProgress(62, "Signing in to AI…", "");
-      toConnect = await withTimeout(
-        gateway.signIn(toConnect),
-        12_000,
-        "AI gateway sign-in",
-      );
+      toConnect = await withTimeout(gateway.signIn(toConnect), 12_000);
     } else {
       await gateway.save({ ...toConnect, password: "" });
     }
     if (isStale(gen)) return;
 
     erpnext.setConnectProgress(78, "Opening AI session…", "");
-    await withTimeout(
-      gateway.connect({ ...toConnect, password: "" }),
-      15_000,
-      "AI gateway connect",
-    );
+    await withTimeout(gateway.connect({ ...toConnect, password: "" }), 15_000);
     if (isStale(gen)) return;
 
     erpnext.setConnectProgress(88, "Finishing up…", "Loading your sessions.");
@@ -176,8 +155,7 @@ async function onRetry() {
 }
 
 onMounted(async () => {
-  fitSidePanelLayout();
-  window.addEventListener("resize", fitSidePanelLayout);
+  layout.agentOpen = true;
   centerTabs.hydrate();
   await gateway.load();
   chat.ensureListener();
@@ -186,13 +164,6 @@ onMounted(async () => {
     await connectAiFromSettings();
   }
 });
-
-watch(
-  () => layout.agentOpen,
-  (open) => {
-    if (!open) layout.agentOpen = true;
-  },
-);
 </script>
 
 <template>
@@ -201,63 +172,39 @@ watch(
       <div
         class="opspilot-sidepanel-shell relative flex h-full min-h-0 flex-col bg-white"
       >
-        <AppTopBar
-          v-if="showShell || layout.settingsOpen"
-          @logout="onLogout"
-        />
-
-        <div
-          v-if="
-            showShell &&
-            gateway.lastError &&
-            !gateway.isConnected &&
-            !layout.settingsOpen
-          "
-          class="flex items-center justify-between gap-3 border-b border-outline-gray-2 bg-surface-red-1 px-4 py-2 text-sm text-ink-red-4"
-        >
-          <span class="truncate">{{ gateway.lastError }}</span>
-          <Button
-            label="Retry"
-            variant="subtle"
-            size="sm"
-            @click="onRetry()"
-          />
-        </div>
-
-        <!-- Side panel: center stacked above full-width agent -->
+        <!-- Ready shell: Leo-style chat -->
         <div
           v-show="showShell && !layout.settingsOpen"
           class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
         >
           <div
             v-show="hasCenterTabs"
-            class="sidepanel-center min-h-0 shrink-0 overflow-hidden"
+            class="sidepanel-center min-h-0 shrink-0 overflow-hidden border-b border-[#ececec]"
           >
             <CenterWorkspace />
           </div>
-          <div class="agent-host flex min-h-0 min-w-0 flex-1 overflow-hidden">
-            <AgentPanel />
+          <div class="min-h-0 flex-1 overflow-hidden">
+            <SideChat @logout="onLogout" @settings="layout.openSettings()" />
           </div>
         </div>
 
         <div
           v-if="showLoading"
-          class="flex min-h-0 flex-1 items-center justify-center text-sm text-ink-gray-6"
+          class="flex min-h-0 flex-1 flex-col bg-white"
         >
-          Starting OpsPilot…
+          <SideHeader />
+          <div
+            class="flex flex-1 items-center justify-center text-[13px] text-[#8a8a8a]"
+          >
+            Starting OpsPilot…
+          </div>
         </div>
 
         <div
           v-else-if="showUrlGate && !showShell"
           class="flex min-h-0 flex-1 flex-col bg-white"
         >
-          <div
-            class="flex h-11 shrink-0 items-center justify-center border-b border-outline-gray-2"
-          >
-            <div class="text-sm font-medium tracking-tight text-ink-gray-8">
-              OpsPilot
-            </div>
-          </div>
+          <SideHeader @settings="layout.openSettings()" />
           <div class="min-h-0 flex-1 overflow-auto">
             <SettingsView gate @saved="onUrlSaved" />
           </div>
@@ -267,13 +214,10 @@ watch(
           v-else-if="showLogin"
           class="flex min-h-0 flex-1 flex-col bg-white"
         >
-          <div
-            class="flex h-11 shrink-0 items-center justify-center border-b border-outline-gray-2"
-          >
-            <div class="text-sm font-medium tracking-tight text-ink-gray-8">
-              OpsPilot
-            </div>
-          </div>
+          <SideHeader
+            @settings="erpnext.openUrlSettings()"
+            @logout="onLogout"
+          />
           <LoginView
             @success="onLoginSuccess"
             @change-site="erpnext.openUrlSettings()"
@@ -290,39 +234,44 @@ watch(
 
         <div
           v-else-if="showBootError"
-          class="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 bg-white px-6"
+          class="flex min-h-0 flex-1 flex-col bg-white"
         >
-          <div class="max-w-md text-center">
-            <div class="text-sm font-medium text-ink-gray-8">
-              {{
-                erpnext.accessError === "unsupported_site"
-                  ? "Site not supported"
-                  : erpnext.accessError === "not_permitted"
-                    ? "Not permitted"
-                    : "Could not connect"
-              }}
+          <SideHeader @logout="onLogout" @settings="layout.openSettings()" />
+          <div
+            class="flex flex-1 flex-col items-center justify-center gap-4 px-6"
+          >
+            <div class="max-w-md text-center">
+              <div class="text-[14px] font-semibold text-[#1a1a1a]">
+                {{
+                  erpnext.accessError === "unsupported_site"
+                    ? "Site not supported"
+                    : erpnext.accessError === "not_permitted"
+                      ? "Not permitted"
+                      : "Could not connect"
+                }}
+              </div>
+              <p class="mt-2 text-[13px] text-[#b42318]">
+                {{
+                  erpnext.lastError ||
+                  gateway.lastError ||
+                  "Something went wrong."
+                }}
+              </p>
             </div>
-            <p class="mt-2 text-sm text-ink-red-4">
-              {{
-                erpnext.lastError ||
-                gateway.lastError ||
-                "Something went wrong."
-              }}
-            </p>
-          </div>
-          <div class="flex flex-wrap items-center justify-center gap-2">
-            <Button
-              v-if="erpnext.loggedIn"
-              label="Retry"
-              variant="solid"
-              @click="onRetry()"
-            />
-            <Button label="Sign out" variant="subtle" @click="onLogout()" />
-            <Button
-              label="Change site URL"
-              variant="ghost"
-              @click="erpnext.openUrlSettings()"
-            />
+            <div class="flex flex-wrap items-center justify-center gap-2">
+              <Button
+                v-if="erpnext.loggedIn"
+                label="Retry"
+                variant="solid"
+                @click="onRetry()"
+              />
+              <Button label="Sign out" variant="subtle" @click="onLogout()" />
+              <Button
+                label="Change site URL"
+                variant="ghost"
+                @click="erpnext.openUrlSettings()"
+              />
+            </div>
           </div>
         </div>
 
@@ -330,13 +279,19 @@ watch(
           v-if="showShell && layout.settingsOpen"
           class="flex min-h-0 flex-1 flex-col bg-white"
         >
+          <SideHeader
+            @logout="onLogout"
+            @settings="layout.closeSettings()"
+          />
           <div
-            class="flex h-10 shrink-0 items-center justify-between border-b border-outline-gray-2 px-4"
+            class="flex h-10 shrink-0 items-center justify-between border-b border-[#ececec] px-4"
           >
-            <div class="text-sm font-medium text-ink-gray-8">Settings</div>
+            <div class="text-[13px] font-medium text-[#1a1a1a]">
+              Advanced settings
+            </div>
             <button
               type="button"
-              class="inline-flex h-7 w-7 items-center justify-center rounded-md text-ink-gray-6 hover:bg-surface-gray-2"
+              class="side-icon-btn"
               title="Close settings"
               @click="layout.closeSettings()"
             >
@@ -347,7 +302,7 @@ watch(
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="2"
+                stroke-width="1.75"
                 stroke-linecap="round"
                 stroke-linejoin="round"
               >
