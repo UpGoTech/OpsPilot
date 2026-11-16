@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import {
+  erpnextAdoptBrowserSession,
   erpnextFetchOpspilotSettings,
   erpnextLogin,
   erpnextLogout,
@@ -190,6 +191,26 @@ export const useErpnextStore = defineStore("erpnext", () => {
     return session;
   }
 
+  /** Side panel: use the Desk browser session instead of a password form. */
+  async function adoptBrowserSession() {
+    clearAccessError();
+    const session = await erpnextAdoptBrowserSession();
+    loggedIn.value = session.loggedIn;
+    user.value = session.user ?? "";
+    fullName.value = session.fullName ?? "";
+    if (session.siteUrl) {
+      siteUrl.value = session.siteUrl;
+    }
+    if (session.user) {
+      try {
+        await rememberUsername(session.user);
+      } catch {
+        // Non-fatal.
+      }
+    }
+    return session;
+  }
+
   async function logout() {
     try {
       await erpnextLogout();
@@ -240,7 +261,7 @@ export const useErpnextStore = defineStore("erpnext", () => {
       const message = error instanceof Error ? error.message : String(error);
       lastError.value = message;
       accessError.value = classifyAccessError(message);
-      if (/session expired|Not logged|sign in again/i.test(message)) {
+      if (/session expired|Not logged|Not signed in|sign in again|Desk tab/i.test(message)) {
         loggedIn.value = false;
         bootPhase.value = "needs_login";
       } else {
@@ -313,6 +334,7 @@ export const useErpnextStore = defineStore("erpnext", () => {
     saveSiteUrl,
     rememberUsername,
     login,
+    adoptBrowserSession,
     logout,
     probeSupport,
     fetchSettings,

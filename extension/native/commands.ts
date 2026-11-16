@@ -33,6 +33,8 @@ export async function handleCommand(
       return erpnext.login(String(args.usr ?? ""), String(args.pwd ?? ""));
     case "erpnext_logout":
       return erpnext.logout();
+    case "erpnext_adopt_browser_session":
+      return erpnext.adoptBrowserSession();
     case "erpnext_probe_support":
       return erpnext.probeSupport();
     case "erpnext_fetch_opspilot_settings":

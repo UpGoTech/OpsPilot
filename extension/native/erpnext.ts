@@ -22,7 +22,7 @@ function isLocalhostName(host: string): boolean {
 
 export function normalizeSiteUrl(raw: string): string {
   const trimmed = raw.trim();
-  if (!trimmed) throw new Error("ERPNext site URL is required");
+  if (!trimmed) throw new Error("OpsPilot site URL is required");
 
   let withScheme = trimmed;
   if (!trimmed.includes("://")) {
@@ -35,7 +35,7 @@ export function normalizeSiteUrl(raw: string): string {
   try {
     parsed = new URL(withScheme);
   } catch {
-    throw new Error(`Invalid ERPNext URL: ${trimmed}`);
+    throw new Error(`Invalid OpsPilot site URL: ${trimmed}`);
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`Unsupported URL scheme: ${parsed.protocol}`);
@@ -142,7 +142,7 @@ async function withDeadline<T>(promise: Promise<T>, secs: number): Promise<T> {
       promise,
       new Promise<T>((_, reject) => {
         timer = setTimeout(
-          () => reject(new Error("Could not reach ERPNext")),
+          () => reject(new Error("Could not reach OpsPilot site")),
           secs * 1000,
         );
       }),
@@ -211,7 +211,7 @@ export async function sessionInfo(): Promise<ErpnextSessionInfo> {
 export async function login(usr: string, pwd: string): Promise<ErpnextSessionInfo> {
   const config = await loadConfig();
   if (!config.siteUrl.trim()) {
-    throw new Error("Save an ERPNext site URL in Settings first.");
+    throw new Error("Save an OpsPilot site URL in Settings first.");
   }
   const user = usr.trim();
   if (!user) throw new Error("Username is required");
@@ -278,30 +278,113 @@ export async function login(usr: string, pwd: string): Promise<ErpnextSessionInf
 }
 
 export async function logout(): Promise<void> {
+  // Extension session only — do not log the user out of Desk in the browser tab.
+  await writeSession(null);
+}
+
+/**
+ * Adopt the browser tab's OpsPilot `sid` (chrome.cookies) so the side panel
+ * never needs its own username/password form.
+ */
+export async function adoptBrowserSession(): Promise<ErpnextSessionInfo> {
   const config = await loadConfig();
-  const session = await readSession();
-  if (session?.sid && config.siteUrl.trim()) {
-    try {
-      const { url } = siteApiUrl(config.siteUrl, "/api/method/logout");
-      await fetch(url, {
+  if (!config.siteUrl.trim()) {
+    throw new Error("Save an OpsPilot site URL in Settings first.");
+  }
+  const base = normalizeSiteUrl(config.siteUrl);
+  if (!chrome.cookies?.get) {
+    throw new Error("Could not read the OpsPilot site session from this browser.");
+  }
+
+  const cookie = await chrome.cookies.get({ url: base, name: "sid" });
+  const sid = cookie?.value?.trim() ?? "";
+  if (!sid || sid === "Guest") {
+    throw new Error("Not signed in on your OpsPilot site. Sign in on the Desk tab first.");
+  }
+
+  const { url } = siteApiUrl(base, "/api/method/frappe.auth.get_logged_user");
+  const response = await withDeadline(
+    fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Cookie: `sid=${sid}`,
+      },
+      credentials: "omit",
+    }),
+    8,
+  );
+  const status = response.status;
+  const text = await response.text();
+  let body: unknown = null;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    body = null;
+  }
+
+  if (status === 401 || status === 403) {
+    await writeSession(null);
+    throw new Error("Not signed in on your OpsPilot site. Sign in on the Desk tab first.");
+  }
+  if (status < 200 || status >= 300) {
+    throw new Error(httpStatusMessage(status, text, body, "Session check"));
+  }
+
+  const message =
+    body && typeof body === "object"
+      ? (body as Record<string, unknown>).message
+      : null;
+  const user =
+    typeof message === "string" && message && message !== "Guest" ? message : "";
+  if (!user) {
+    await writeSession(null);
+    throw new Error("Not signed in on your OpsPilot site. Sign in on the Desk tab first.");
+  }
+
+  // Best-effort full name from User resource (non-fatal if it fails).
+  let fullName = user;
+  try {
+    const { url: userUrl } = siteApiUrl(
+      base,
+      `/api/resource/User/${encodeURIComponent(user)}?fields=["full_name"]`,
+    );
+    const userResp = await withDeadline(
+      fetch(userUrl, {
         method: "GET",
         headers: {
           Accept: "application/json",
-          Cookie: `sid=${session.sid}`,
+          Cookie: `sid=${sid}`,
         },
         credentials: "omit",
-      });
-    } catch {
-      // best-effort
+      }),
+      5,
+    );
+    if (userResp.ok) {
+      const userBody = (await userResp.json()) as {
+        data?: { full_name?: string };
+      };
+      if (userBody.data?.full_name?.trim()) {
+        fullName = userBody.data.full_name.trim();
+      }
     }
+  } catch {
+    // keep username
   }
-  await writeSession(null);
+
+  await writeSession({ sid, user, fullName, siteUrl: base });
+  return {
+    loggedIn: true,
+    user,
+    fullName,
+    siteUrl: base,
+  };
 }
 
 export async function probeSupport(): Promise<boolean> {
   const config = await loadConfig();
   if (!config.siteUrl.trim()) {
-    throw new Error("ERPNext site URL is not configured.");
+    throw new Error("OpsPilot site URL is not configured.");
   }
   const { url, base } = siteApiUrl(
     config.siteUrl,
@@ -372,7 +455,7 @@ function parseSettingsMessage(message: unknown): OpsPilotSettingsPayload {
 export async function fetchOpspilotSettings(): Promise<OpsPilotSettingsPayload | null> {
   const config = await loadConfig();
   if (!config.siteUrl.trim()) {
-    throw new Error("ERPNext site URL is not configured.");
+    throw new Error("OpsPilot site URL is not configured.");
   }
 
   const supported = await probeSupport();
@@ -382,7 +465,7 @@ export async function fetchOpspilotSettings(): Promise<OpsPilotSettingsPayload |
 
   const session = await readSession();
   if (!session?.sid) {
-    throw new Error("Not logged into ERPNext. Sign in again.");
+    throw new Error("Not signed in on your OpsPilot site. Sign in on the Desk tab first.");
   }
 
   const { url, base } = siteApiUrl(
@@ -412,7 +495,7 @@ export async function fetchOpspilotSettings(): Promise<OpsPilotSettingsPayload |
 
   if (status === 401 || status === 403) {
     await writeSession(null);
-    throw new Error("ERPNext session expired. Sign in again.");
+    throw new Error("OpsPilot site session expired. Sign in on the Desk tab again.");
   }
 
   if (status < 200 || status >= 300) {

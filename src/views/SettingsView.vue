@@ -89,9 +89,8 @@ async function onSave() {
       />
 
       <p class="text-xs text-ink-gray-5">
-        After you save, you will sign in with your OpsPilot username and
-        password. The session is not kept when the app closes — you sign in each
-        launch. Local bench example:
+        After you save, sign in on your Desk tab — the side panel uses that
+        browser session (no separate OpsPilot password). Local bench example:
         <span class="font-medium text-ink-gray-7">http://sitename.localhost</span>
         (use <span class="font-medium text-ink-gray-7">http</span>, not https).
       </p>

@@ -27,6 +27,11 @@ export function erpnextLogout() {
   return invoke<void>("erpnext_logout");
 }
 
+/** Chromium side panel: adopt Desk `sid` from chrome.cookies (no password form). */
+export function erpnextAdoptBrowserSession() {
+  return invoke<ErpnextSessionInfo>("erpnext_adopt_browser_session");
+}
+
 export function erpnextProbeSupport() {
   return invoke<boolean>("erpnext_probe_support");
 }

@@ -81,7 +81,7 @@ const kicker = computed(() => {
 const headline = computed(() => {
   switch (props.gate.status) {
     case "not_logged_in":
-      return "You're on the right site, but nobody's signed in.";
+      return "You're on the right site, but Desk isn't signed in.";
     case "opspilot_unavailable":
       return quote.value;
     case "user_not_enabled": {
@@ -97,7 +97,7 @@ const hint = computed(() => {
   const host = props.siteHost || "your OpsPilot site";
   switch (props.gate.status) {
     case "not_logged_in":
-      return `Sign in to ${host} to continue.`;
+      return `Sign in on the Desk tab for ${host} — OpsPilot uses that session.`;
     case "opspilot_unavailable":
       return `Install the OpsPilot app on ${host}, then try again.`;
     case "user_not_enabled":
@@ -227,20 +227,17 @@ function nextQuote() {
       <p class="side-disabled-hint">{{ hint }}</p>
 
       <button
-        v-if="gate.status === 'not_logged_in'"
         type="button"
         class="side-disabled-cta"
-        @click="emit('signIn')"
+        @click="
+          gate.status === 'not_logged_in' ? emit('signIn') : emit('openSite')
+        "
       >
-        Sign in to OpsPilot
-      </button>
-      <button
-        v-else
-        type="button"
-        class="side-disabled-cta"
-        @click="emit('openSite')"
-      >
-        Open OpsPilot site
+        {{
+          gate.status === "not_logged_in"
+            ? "Open Desk to sign in"
+            : "Open OpsPilot site"
+        }}
       </button>
 
       <button
