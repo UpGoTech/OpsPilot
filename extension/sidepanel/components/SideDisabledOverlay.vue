@@ -8,6 +8,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   openErpnext: [];
+  changeSite: [];
 }>();
 
 const erpnext = useErpnextStore();
@@ -70,6 +71,13 @@ function nextQuote() {
         @click="emit('openErpnext')"
       >
         Open ERPNext
+      </button>
+      <button
+        type="button"
+        class="side-disabled-link"
+        @click="emit('changeSite')"
+      >
+        Change ERPNext site URL
       </button>
     </div>
   </div>

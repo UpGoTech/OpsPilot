@@ -218,6 +218,7 @@ onMounted(async () => {
           v-if="showDisabledOverlay"
           :site-host="siteHost"
           @open-erpnext="focusErpnextTab"
+          @change-site="erpnext.openUrlSettings()"
         />
         <!-- Ready shell: Leo-style chat -->
         <div

@@ -324,6 +324,23 @@ html.opspilot-sidepanel body {
   background: #000;
 }
 
+.side-disabled-link {
+  margin-top: 12px;
+  display: inline-flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #4a4a4a;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.side-disabled-link:hover {
+  color: #1a1a1a;
+}
+
 @keyframes side-fade-in {
   from {
     opacity: 0;
