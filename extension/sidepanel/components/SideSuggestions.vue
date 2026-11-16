@@ -1,4 +1,11 @@
 <script setup lang="ts">
+withDefaults(
+  defineProps<{
+    disabled?: boolean;
+  }>(),
+  { disabled: false },
+);
+
 const emit = defineEmits<{
   pick: [prompt: string];
 }>();
@@ -13,12 +20,16 @@ const suggestions = [
 </script>
 
 <template>
-  <div class="flex flex-col items-start gap-2.5 px-1 pt-2">
+  <div
+    class="flex flex-col items-start gap-2.5 px-1 pt-2"
+    :class="disabled ? 'pointer-events-none opacity-45' : ''"
+  >
     <button
       v-for="item in suggestions"
       :key="item"
       type="button"
       class="side-suggestion"
+      :disabled="disabled"
       @click="emit('pick', item)"
     >
       <span class="side-suggestion-icon" aria-hidden="true">

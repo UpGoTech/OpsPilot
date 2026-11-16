@@ -251,6 +251,30 @@ html.opspilot-sidepanel body {
   background: #000;
 }
 
+.side-composer.is-disabled .side-composer-card {
+  background: #f7f7f7;
+  border-color: #ebebeb;
+}
+
+.side-disabled-banner {
+  animation: side-fade-in 0.18s ease;
+}
+
+@keyframes side-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+html.opspilot-sidepanel .side-chat.is-erpnext-inactive .side-brand {
+  color: #6a6a6a;
+}
+
 /* Restyle shared Transcript inside the side panel */
 html.opspilot-sidepanel .agent-transcript {
   background: transparent !important;

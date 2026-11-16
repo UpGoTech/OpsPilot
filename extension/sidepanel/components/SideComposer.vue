@@ -15,10 +15,13 @@ const props = withDefaults(
   defineProps<{
     placeholder?: string;
     seed?: string;
+    /** When true (non-ERPNext tab), block send / attach. */
+    disabled?: boolean;
   }>(),
   {
     placeholder: "How can I help you today?",
     seed: "",
+    disabled: false,
   },
 );
 
@@ -30,9 +33,13 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const pending = ref<PromptAttachment[]>([]);
 const attachError = ref<string | null>(null);
 
+const inputEnabled = computed(
+  () => gateway.isConnected && !props.disabled,
+);
+
 const canSend = computed(
   () =>
-    gateway.isConnected &&
+    inputEnabled.value &&
     !chat.sending &&
     (!!draft.value.trim() || pending.value.length > 0),
 );
@@ -137,7 +144,10 @@ defineExpose({
 </script>
 
 <template>
-  <div class="side-composer shrink-0 px-3 pb-3 pt-1">
+  <div
+    class="side-composer shrink-0 px-3 pb-3 pt-1"
+    :class="disabled ? 'is-disabled' : ''"
+  >
     <div class="side-composer-card">
       <div v-if="pending.length" class="mb-2 flex flex-wrap gap-2 px-1">
         <div
@@ -171,8 +181,12 @@ defineExpose({
         rows="1"
         spellcheck="false"
         class="side-composer-input"
-        :placeholder="placeholder"
-        :disabled="!gateway.isConnected"
+        :placeholder="
+          disabled
+            ? 'Switch to your ERPNext tab to chat'
+            : placeholder
+        "
+        :disabled="!inputEnabled"
         @keydown="onKeydown"
       />
 
@@ -201,7 +215,7 @@ defineExpose({
             type="button"
             class="side-icon-btn"
             title="Clear"
-            :disabled="!draft && !pending.length"
+            :disabled="disabled || (!draft && !pending.length)"
             @click="clearDraft"
           >
             <svg
@@ -224,7 +238,7 @@ defineExpose({
             type="button"
             class="side-icon-btn"
             title="Attach"
-            :disabled="!gateway.isConnected || chat.sending"
+            :disabled="!inputEnabled || chat.sending"
             @click="fileInput?.click()"
           >
             <svg

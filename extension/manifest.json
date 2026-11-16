@@ -29,7 +29,8 @@
     "sidePanel",
     "storage",
     "downloads",
-    "tabs"
+    "tabs",
+    "windows"
   ],
   "host_permissions": [
     "http://*/*",
