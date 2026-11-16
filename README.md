@@ -20,15 +20,27 @@ See [`AGENTS.md`](./AGENTS.md), [`spec/v1.md`](./spec/v1.md), and [`spec/erpnext
 
 ## Develop
 
+Desktop (version-01):
+
 ```bash
 npm install
 npm run tauri dev
 ```
 
+Chromium side panel (version-02 — Chrome / Brave / Edge):
+
+```bash
+npm install
+npm run extension:build
+```
+
+Then load `extension/dist` as an unpacked extension (`chrome://extensions`, `brave://extensions`, or `edge://extensions`). See [`extension/README.md`](./extension/README.md) and [`spec/v2.md`](./spec/v2.md).
+
 ## Build
 
 ```bash
 npm run tauri build
+npm run extension:build
 ```
 
 ## Connect

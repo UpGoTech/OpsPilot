@@ -1,0 +1,23 @@
+/* Chromium side panel: agent fills width; hide desktop resize chrome. */
+html.opspilot-sidepanel,
+html.opspilot-sidepanel body,
+html.opspilot-sidepanel #app {
+  width: 100%;
+  min-width: 0;
+}
+
+html.opspilot-sidepanel .opspilot-sidepanel-shell .agent-host,
+html.opspilot-sidepanel .opspilot-sidepanel-shell .agent-host > aside {
+  width: 100% !important;
+  max-width: none !important;
+}
+
+/* Hide desktop resize handle inside the narrow panel. */
+html.opspilot-sidepanel .opspilot-sidepanel-shell .agent-host > aside > :first-child {
+  display: none !important;
+}
+
+html.opspilot-sidepanel .opspilot-sidepanel-shell .sidepanel-center {
+  border-bottom: 1px solid #e5e5e5;
+  max-height: 42%;
+}

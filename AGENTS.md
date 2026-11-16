@@ -1,8 +1,8 @@
 # OpsPilot Engineering Guide
 
-OpsPilot is a **Tauri 2** remote-only desktop client for [Hermes Agent](https://github.com/nousresearch/hermes-agent). It talks to an already-running `hermes serve` / dashboard gateway the same way Hermes Desktop does in remote mode. It does **not** install, bundle, or manage a local Hermes runtime.
+OpsPilot is a remote-only client for [Hermes Agent](https://github.com/nousresearch/hermes-agent). **version-01** is the **Tauri 2** desktop app; **version-02** is a **Manifest V3 Side Panel** for Chrome / Brave / Edge ([`extension/`](./extension/), [`spec/v2.md`](./spec/v2.md)). Both talk to an already-running `hermes serve` / dashboard gateway the same way Hermes Desktop does in remote mode. Neither installs, bundles, or manages a local Hermes runtime.
 
-Product and implementation plans live under [`spec/`](./spec/). Read [`spec/v1.md`](./spec/v1.md) before changing scope.
+Product and implementation plans live under [`spec/`](./spec/). Read [`spec/v1.md`](./spec/v1.md) / [`spec/v2.md`](./spec/v2.md) before changing scope.
 
 ## What this app is
 
