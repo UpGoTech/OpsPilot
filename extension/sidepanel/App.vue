@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { Button, DesktopShell, FrappeUIProvider } from "frappe-ui";
-import CenterWorkspace from "../../src/components/shell/CenterWorkspace.vue";
+import { Button, FrappeUIProvider } from "frappe-ui";
 import ConnectingView from "../../src/views/ConnectingView.vue";
 import SettingsView from "../../src/views/SettingsView.vue";
-import { useCenterTabsStore } from "../../src/stores/centerTabs";
+import { gatewaySiteState } from "../../src/lib/native";
 import { useChatStore } from "../../src/stores/chat";
 import { useErpnextStore } from "../../src/stores/erpnext";
 import { useGatewayStore } from "../../src/stores/gateway";
@@ -21,12 +20,14 @@ const gateway = useGatewayStore();
 const chat = useChatStore();
 const sessions = useSessionsStore();
 const layout = useLayoutStore();
-const centerTabs = useCenterTabsStore();
 const sessionTabs = useTabsStore();
 const {
   siteGate,
   siteHost,
   checking,
+  focusedSite,
+  activeSiteKey,
+  activeSiteUrl,
   refresh: refreshSiteGate,
 } = useErpnextContext();
 
@@ -35,12 +36,10 @@ const showUrlGate = computed(() => erpnext.bootPhase === "needs_url");
 const showConnecting = computed(() => erpnext.bootPhase === "connecting");
 const showBootError = computed(() => erpnext.bootPhase === "error");
 const showLoading = computed(() => erpnext.bootPhase === "loading");
-const hasCenterTabs = computed(() => centerTabs.tabs.length > 0);
 
 /** Waiting for Desk session / site gate — no password form in the side panel. */
 const showWaiting = computed(
   () =>
-    erpnext.hasSiteUrl &&
     !showShell.value &&
     !showUrlGate.value &&
     !showConnecting.value &&
@@ -49,19 +48,52 @@ const showWaiting = computed(
 );
 
 /**
- * Overlay when the focused OpsPilot site isn't ready.
- * Hide while editing the site URL.
+ * Overlay when the focused tab isn't a ready OpsPilot Desk tab.
+ * With tab-scoped panels this is uncommon, but still covers login/settings gaps.
  */
 const showDisabledOverlay = computed(() => {
-  if (!erpnext.hasSiteUrl) return false;
-  if (showUrlGate.value || showLoading.value) return false;
-  if (checking.value) return false;
-  if (layout.settingsOpen || erpnext.bootPhase === "needs_url") return false;
+  if (showUrlGate.value || showLoading.value || showConnecting.value) return false;
+  if (layout.settingsOpen) return false;
+  if (checking.value && siteGate.value.status === "checking" && !showShell.value) {
+    return true;
+  }
   return siteGate.value.status !== "ok";
+});
+
+const waitingCopy = computed(() => {
+  if (checking.value || siteGate.value.status === "checking") {
+    return {
+      title: "Checking this OpsPilot site…",
+      body: "Looking for a signed-in Desk session and AI settings.",
+    };
+  }
+  switch (siteGate.value.status) {
+    case "ok":
+      return {
+        title: "Connecting…",
+        body: "Desk session found — opening chat.",
+      };
+    case "not_logged_in":
+      return {
+        title: "Desk isn’t signed in",
+        body: "Sign in on this Desk tab, then click Retry.",
+      };
+    case "no_site":
+      return {
+        title: "No OpsPilot site here",
+        body: "Open a Desk tab where the OpsPilot app is installed.",
+      };
+    default:
+      return {
+        title: "Waiting for this OpsPilot site",
+        body: "Sign in on Desk — OpsPilot picks up that session automatically.",
+      };
+  }
 });
 
 const connectGeneration = ref(0);
 const startingFromSite = ref(false);
+const boundSiteKey = ref<string | null>(null);
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -83,6 +115,33 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 function isStale(gen: number) {
   return gen !== connectGeneration.value;
+}
+
+async function bindStoresToSite(siteKey: string, siteUrl: string) {
+  boundSiteKey.value = siteKey;
+  await gateway.setActiveSite(siteKey);
+  sessions.bindSite(siteKey);
+  sessionTabs.bindSite(siteKey);
+  chat.reset();
+  erpnext.resetForSiteSwitch(siteUrl);
+  await erpnext.activateSite(siteUrl);
+}
+
+async function hydrateConnectedSite(siteKey: string) {
+  const native = await gatewaySiteState(siteKey);
+  if (!native.connected) return false;
+  await gateway.load();
+  gateway.$patch({
+    state: "open",
+    ready: true,
+    lastError: null,
+    detail: null,
+  });
+  chat.ensureListener();
+  await sessions.refresh();
+  await sessionTabs.restoreAfterSessionsLoad();
+  erpnext.markReady();
+  return true;
 }
 
 async function connectAiFromSettings() {
@@ -126,7 +185,6 @@ async function connectAiFromSettings() {
       await sessions.refresh();
       if (isStale(gen)) return;
       await sessionTabs.restoreAfterSessionsLoad();
-      await centerTabs.restoreActiveContent();
     } else if (!gateway.lastError) {
       throw new Error("Could not connect");
     }
@@ -142,20 +200,46 @@ async function connectAiFromSettings() {
   }
 }
 
-/** Desk tab is ready → adopt browser sid → Hermes → chat. */
-async function startFromBrowserSession() {
+/**
+ * Desk tab is ready → adopt browser sid → Hermes → chat.
+ * Auto-start only from needs_login; errors / reconnects use force.
+ */
+async function startFromBrowserSession(opts?: { force?: boolean }) {
   if (startingFromSite.value) return;
   if (siteGate.value.status !== "ok") return;
-  if (erpnext.bootPhase === "ready" && gateway.isConnected) return;
-  if (layout.settingsOpen || erpnext.bootPhase === "needs_url") return;
+  const site = focusedSite.value;
+  if (!site) return;
+  if (layout.settingsOpen) return;
+  if (
+    erpnext.bootPhase === "ready" &&
+    gateway.isConnected &&
+    boundSiteKey.value === site.siteKey
+  ) {
+    return;
+  }
+  if (!opts?.force && erpnext.bootPhase === "connecting") return;
+  if (!opts?.force && erpnext.bootPhase === "error") return;
 
   startingFromSite.value = true;
   try {
+    if (boundSiteKey.value !== site.siteKey) {
+      await bindStoresToSite(site.siteKey, site.siteUrl);
+    } else {
+      await erpnext.activateSite(site.siteUrl);
+      await gateway.setActiveSite(site.siteKey);
+    }
+
+    // Reuse an already-open Hermes socket for this site.
+    if (!opts?.force) {
+      const reused = await hydrateConnectedSite(site.siteKey);
+      if (reused) return;
+    }
+
     erpnext.markConnecting(
       "Using site session…",
       "Reading your OpsPilot login from the Desk tab.",
     );
-    await withTimeout(erpnext.adoptBrowserSession(), 8_000);
+    await withTimeout(erpnext.adoptBrowserSession(site.siteUrl), 8_000);
     await connectAiFromSettings();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -172,18 +256,13 @@ async function onCancelConnect() {
   } catch {
     // ignore
   }
-  // Stay without a password form — overlay / waiting resumes from site gate.
-  if (erpnext.hasSiteUrl) {
-    erpnext.markNeedsLogin();
-  } else {
-    erpnext.openUrlSettings();
-  }
+  erpnext.markNeedsLogin();
 }
 
 async function onUrlSaved() {
   layout.closeSettings();
   if (siteGate.value.status === "ok") {
-    await startFromBrowserSession();
+    await startFromBrowserSession({ force: true });
   }
 }
 
@@ -199,23 +278,23 @@ async function onLogout() {
 }
 
 async function onRetry() {
+  if (activeSiteUrl.value) {
+    erpnext.markNeedsLogin();
+  }
   await refreshSiteGate();
   if (siteGate.value.status === "ok") {
-    await startFromBrowserSession();
+    await startFromBrowserSession({ force: true });
   }
 }
 
 async function focusOpspilotSite() {
-  const host = siteHost.value;
-  if (!host) {
-    erpnext.openUrlSettings();
-    return;
-  }
+  const host = siteHost.value || activeSiteKey.value;
+  if (!host) return;
   try {
     const all = await chrome.tabs.query({});
     const hit = all.find((t) => {
       try {
-        return t.url && new URL(t.url).host.toLowerCase() === host;
+        return t.url && new URL(t.url).hostname.toLowerCase() === host;
       } catch {
         return false;
       }
@@ -230,14 +309,33 @@ async function focusOpspilotSite() {
   } catch {
     // fall through
   }
-  const url = erpnext.siteUrl.trim();
+  const url = activeSiteUrl.value || erpnext.siteUrl.trim();
   if (url) await chrome.tabs.create({ url });
 }
 
 watch(
+  () => focusedSite.value?.siteKey ?? null,
+  async (nextKey, prevKey) => {
+    if (!nextKey) return;
+    const switched = Boolean(prevKey) && nextKey !== prevKey;
+    if (nextKey !== boundSiteKey.value) {
+      connectGeneration.value += 1;
+      startingFromSite.value = false;
+      await bindStoresToSite(
+        nextKey,
+        focusedSite.value?.siteUrl || `https://${nextKey}`,
+      );
+    }
+    if (siteGate.value.status === "ok") {
+      await startFromBrowserSession({ force: switched });
+    }
+  },
+);
+
+watch(
   () => siteGate.value.status,
   (status) => {
-    if (status === "ok") {
+    if (status === "ok" && erpnext.bootPhase === "needs_login") {
       void startFromBrowserSession();
     }
   },
@@ -245,44 +343,37 @@ watch(
 
 onMounted(async () => {
   layout.agentOpen = true;
-  centerTabs.hydrate();
-  await gateway.load();
   chat.ensureListener();
   await erpnext.load();
-  if (siteGate.value.status === "ok") {
-    await startFromBrowserSession();
+  erpnext.markNeedsLogin();
+  // Focused-tab watch binds stores + connects once siteGate is ok.
+  await refreshSiteGate();
+  if (siteGate.value.status === "ok" && focusedSite.value) {
+    await startFromBrowserSession({ force: true });
   }
 });
 </script>
 
 <template>
   <FrappeUIProvider>
-    <DesktopShell :scroll="false" class="h-full bg-white">
-      <div
-        class="opspilot-sidepanel-shell relative flex h-full min-h-0 flex-col bg-white"
-      >
+    <div
+      class="opspilot-sidepanel-shell relative flex h-full min-h-0 flex-col bg-white"
+    >
         <SideDisabledOverlay
           v-if="showDisabledOverlay"
           :gate="siteGate"
           :site-host="siteHost"
           @open-site="focusOpspilotSite"
-          @change-site="erpnext.openUrlSettings()"
+          @change-site="layout.openSettings()"
           @sign-in="focusOpspilotSite"
+          @retry="onRetry()"
         />
 
         <div
           v-show="showShell && !layout.settingsOpen"
           class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
         >
-          <div
-            v-show="hasCenterTabs"
-            class="sidepanel-center min-h-0 shrink-0 overflow-hidden border-b border-[#ececec]"
-          >
-            <CenterWorkspace />
-          </div>
-          <div class="min-h-0 flex-1 overflow-hidden">
-            <SideChat @logout="onLogout" @settings="layout.openSettings()" />
-          </div>
+          <SideChat @logout="onLogout" @settings="layout.openSettings()" />
         </div>
 
         <div
@@ -344,9 +435,9 @@ onMounted(async () => {
             <div class="flex flex-wrap items-center justify-center gap-2">
               <Button label="Retry" variant="solid" @click="onRetry()" />
               <Button
-                label="Change site URL"
+                label="Site details"
                 variant="ghost"
-                @click="erpnext.openUrlSettings()"
+                @click="layout.openSettings()"
               />
             </div>
           </div>
@@ -356,17 +447,33 @@ onMounted(async () => {
           v-else-if="showWaiting"
           class="flex min-h-0 flex-1 flex-col bg-white"
         >
-          <SideHeader @settings="erpnext.openUrlSettings()" />
+          <SideHeader @settings="layout.openSettings()" />
           <div
-            class="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center"
+            class="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center"
           >
             <div class="text-[14px] font-medium text-[#1a1a1a]">
-              Waiting for your OpsPilot site
+              {{ waitingCopy.title }}
             </div>
             <p class="max-w-xs text-[13px] text-[#6b6b6b]">
-              Open and sign in on your Desk tab — OpsPilot picks up that session
-              automatically.
+              {{ waitingCopy.body }}
             </p>
+            <p
+              v-if="siteHost || siteGate.detail"
+              class="max-w-xs text-[11px] text-[#8a8a8a]"
+            >
+              <template v-if="siteGate.detail">{{ siteGate.detail }}</template>
+              <template v-else>
+                Site: {{ siteHost }}
+                <span v-if="siteGate.username"> · {{ siteGate.username }}</span>
+              </template>
+            </p>
+            <Button
+              label="Retry"
+              variant="solid"
+              :loading="checking"
+              :disabled="checking"
+              @click="onRetry()"
+            />
           </div>
         </div>
 
@@ -382,7 +489,7 @@ onMounted(async () => {
             class="flex h-10 shrink-0 items-center justify-between border-b border-[#ececec] px-4"
           >
             <div class="text-[13px] font-medium text-[#1a1a1a]">
-              Advanced settings
+              Site details
             </div>
             <button
               type="button"
@@ -410,7 +517,6 @@ onMounted(async () => {
             <SettingsView embedded @saved="onUrlSaved" />
           </div>
         </div>
-      </div>
-    </DesktopShell>
+    </div>
   </FrappeUIProvider>
 </template>

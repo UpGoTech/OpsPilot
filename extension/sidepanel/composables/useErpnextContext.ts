@@ -1,26 +1,20 @@
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useErpnextStore } from "../../../src/stores/erpnext";
+import { hostnameOf } from "../../native/browserSession";
 import {
-  findSiteTabId,
+  isRestrictedTabUrl,
+  siteKeyFromUrl,
+  siteUrlFromTabUrl,
+} from "../../native/siteKey";
+import {
   tabGetLoggedUser,
   tabGetOpspilotSettings,
   tabPingOpspilot,
 } from "../../native/tabRpc";
-import { hostnameOf, readBrowserSid } from "../../native/browserSession";
-
-export interface ActivePage {
-  title: string;
-  url: string;
-  host: string;
-}
 
 /**
- * Layered readiness of the focused OpsPilot site tab.
- * - wrong_tab: focused tab is not the configured site
- * - not_logged_in: correct site, but Desk session is Guest / missing
- * - opspilot_unavailable: logged in, but OpsPilot app missing on site
- * - user_not_enabled: app present, but this user has no OpsPilot Settings
- * - ok: site + login + app + user settings all good
+ * Layered readiness of the focused OpsPilot Desk tab.
+ * Multi-site: site comes from the focused tab (panel only opens on ping-ok sites).
  */
 export type SiteGateStatus =
   | "checking"
@@ -37,199 +31,277 @@ export interface SiteGate {
   detail: string;
 }
 
-function isRestrictedUrl(url: string): boolean {
-  return (
-    url.startsWith("chrome://") ||
-    url.startsWith("chrome-extension://") ||
-    url.startsWith("edge://") ||
-    url.startsWith("brave://") ||
-    url.startsWith("about:")
-  );
+export interface FocusedSite {
+  tabId: number;
+  tabUrl: string;
+  siteKey: string;
+  siteUrl: string;
 }
 
-/** Compare hostnames only — ignore port (bench :8000 vs configured URL). */
-export function matchesErpnextSite(tabUrl: string, siteUrl: string): boolean {
-  if (!tabUrl || isRestrictedUrl(tabUrl)) return false;
-  const tabHost = hostnameOf(tabUrl);
-  const siteHost = hostnameOf(siteUrl);
-  if (!tabHost || !siteHost) return false;
-  return tabHost === siteHost;
-}
-
-const page = ref<ActivePage | null>(null);
-const checking = ref(true);
-const siteGate = ref<SiteGate>({
-  status: "checking",
-  username: "",
-  detail: "",
-});
-let subscriberCount = 0;
-let siteUrlWatchStop: (() => void) | null = null;
-let probeSeq = 0;
-
-async function refreshPage() {
+async function getFocusedSite(): Promise<FocusedSite | null> {
   try {
     const tabs = await chrome.tabs.query({
       active: true,
       lastFocusedWindow: true,
     });
     const tab = tabs[0];
-    if (!tab?.url || isRestrictedUrl(tab.url)) {
-      page.value = null;
-      return;
-    }
-    let host = tab.url;
-    try {
-      const parsed = new URL(tab.url);
-      host = parsed.host + parsed.pathname.replace(/\/$/, "");
-    } catch {
-      // keep raw
-    }
-    page.value = {
-      title: tab.title?.trim() || "This page",
-      url: tab.url,
-      host,
-    };
+    if (!tab?.id || !tab.url || isRestrictedTabUrl(tab.url)) return null;
+    const siteKey = siteKeyFromUrl(tab.url);
+    const siteUrl = siteUrlFromTabUrl(tab.url);
+    if (!siteKey || !siteUrl) return null;
+    return { tabId: tab.id, tabUrl: tab.url, siteKey, siteUrl };
   } catch {
-    page.value = null;
+    return null;
   }
 }
 
-async function refreshGate(siteUrl: string) {
+const checking = ref(true);
+const focusedSite = ref<FocusedSite | null>(null);
+const siteGate = ref<SiteGate>({
+  status: "checking",
+  username: "",
+  detail: "",
+});
+let subscriberCount = 0;
+let probeSeq = 0;
+let debounceTimer: number | null = null;
+/** Last known good username per site key — soft ok flips. */
+const lastOkBySite = new Map<string, string>();
+
+function shouldSkipAutoProbe(): boolean {
+  return useErpnextStore().bootPhase === "connecting";
+}
+
+async function refreshGate(opts?: { force?: boolean }) {
+  const force = Boolean(opts?.force);
+  if (!force && shouldSkipAutoProbe()) return;
+
   const seq = ++probeSeq;
+  const phase = useErpnextStore().bootPhase;
+  const soft = !force && phase === "ready";
   checking.value = true;
-  const siteHost = hostnameOf(siteUrl) ?? "";
 
-  if (!siteUrl.trim()) {
-    siteGate.value = { status: "no_site", username: "", detail: "" };
+  const finish = (next: SiteGate, site: FocusedSite | null) => {
+    if (seq !== probeSeq) return;
+    focusedSite.value = site;
+    if (next.status === "ok" && site && next.username) {
+      lastOkBySite.set(site.siteKey, next.username);
+    }
+    siteGate.value = next;
     checking.value = false;
-    return;
-  }
+  };
 
-  await refreshPage();
-  if (seq !== probeSeq) return;
-
-  const tabUrl = page.value?.url ?? "";
-  if (!matchesErpnextSite(tabUrl, siteUrl)) {
-    siteGate.value = {
-      status: "wrong_tab",
-      username: "",
-      detail: siteHost,
-    };
-    checking.value = false;
-    return;
-  }
+  const watchdog = window.setTimeout(() => {
+    if (seq !== probeSeq) return;
+    if (checking.value) {
+      finish(
+        {
+          status: "wrong_tab",
+          username: "",
+          detail: "Timed out probing this tab. Refresh Desk, then Retry.",
+        },
+        focusedSite.value,
+      );
+    }
+  }, 12_000);
 
   try {
-    // Prefer the focused matching tab; fall back to any tab on that host.
-    let tabId: number | null = null;
-    const focused = await chrome.tabs.query({
-      active: true,
-      lastFocusedWindow: true,
-    });
-    const focusedTab = focused[0];
-    if (focusedTab?.id && focusedTab.url && matchesErpnextSite(focusedTab.url, siteUrl)) {
-      tabId = focusedTab.id;
-    } else {
-      const found = await findSiteTabId(siteUrl);
-      tabId = found?.tabId ?? null;
-    }
-
-    if (tabId == null) {
-      siteGate.value = {
-        status: "wrong_tab",
-        username: "",
-        detail: siteHost,
-      };
-      checking.value = false;
-      return;
-    }
-
-    // Same-origin probe inside Desk — extension fetch cannot send sid Cookie.
-    const username = await tabGetLoggedUser(tabId);
+    const focused = await getFocusedSite();
     if (seq !== probeSeq) return;
-    if (!username) {
-      // Cookie presence is a secondary hint for debugging; gate on tab RPC.
-      void readBrowserSid(siteUrl, tabUrl);
-      siteGate.value = {
-        status: "not_logged_in",
-        username: "",
-        detail: siteHost,
-      };
-      checking.value = false;
+
+    if (!focused) {
+      finish(
+        {
+          status: "no_site",
+          username: "",
+          detail: "Open a Desk tab with the OpsPilot app installed.",
+        },
+        null,
+      );
       return;
     }
 
-    const appOk = await tabPingOpspilot(tabId);
+    if (
+      !soft &&
+      (force ||
+        siteGate.value.status === "checking" ||
+        siteGate.value.status === "no_site" ||
+        siteGate.value.status === "wrong_tab")
+    ) {
+      siteGate.value = {
+        status: "checking",
+        username: "",
+        detail: focused.siteKey,
+      };
+    }
+
+    // Soft return to an already-validated site.
+    const cachedUser = lastOkBySite.get(focused.siteKey);
+    if (soft && siteGate.value.status === "ok" && cachedUser) {
+      finish(
+        {
+          status: "ok",
+          username: cachedUser,
+          detail: focused.siteKey,
+        },
+        focused,
+      );
+      return;
+    }
+
+    // Ping OpsPilot BEFORE login checks — random websites must not look like Desk Guest.
+    let appOk = false;
+    try {
+      appOk = await tabPingOpspilot(focused.tabId);
+    } catch {
+      appOk = false;
+    }
     if (seq !== probeSeq) return;
     if (!appOk) {
-      siteGate.value = {
-        status: "opspilot_unavailable",
-        username,
-        detail: siteHost,
-      };
-      checking.value = false;
+      // Ask the service worker to hide this tab's panel (global default can linger).
+      try {
+        void chrome.runtime.sendMessage({
+          type: "opspilot.redetect",
+          tabId: focused.tabId,
+        });
+      } catch {
+        // ignore
+      }
+      finish(
+        {
+          status: "wrong_tab",
+          username: "",
+          detail: `${focused.siteKey} is not an OpsPilot site.`,
+        },
+        focused,
+      );
       return;
     }
 
-    const settings = await tabGetOpspilotSettings(tabId);
+    let username: string | null = null;
+    try {
+      username = await tabGetLoggedUser(focused.tabId);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      finish(
+        {
+          status: "not_logged_in",
+          username: "",
+          detail: `Could not read Desk session (${msg}). Refresh the Desk tab.`,
+        },
+        focused,
+      );
+      return;
+    }
+    if (seq !== probeSeq) return;
+    if (!username) {
+      finish(
+        {
+          status: "not_logged_in",
+          username: "",
+          detail: "Desk tab open but session is Guest. Sign in, then Retry.",
+        },
+        focused,
+      );
+      return;
+    }
+
+    let settings: Awaited<ReturnType<typeof tabGetOpspilotSettings>>;
+    try {
+      settings = await tabGetOpspilotSettings(focused.tabId);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      finish(
+        {
+          status: "user_not_enabled",
+          username,
+          detail: `Could not load OpsPilot Settings (${msg}).`,
+        },
+        focused,
+      );
+      return;
+    }
     if (seq !== probeSeq) return;
     if (settings === "unauthorized") {
-      siteGate.value = {
-        status: "not_logged_in",
-        username: "",
-        detail: siteHost,
-      };
-      checking.value = false;
+      finish(
+        {
+          status: "not_logged_in",
+          username: "",
+          detail: "OpsPilot Settings returned unauthorized. Sign in on Desk again.",
+        },
+        focused,
+      );
       return;
     }
     if (settings === "missing") {
-      siteGate.value = {
-        status: "user_not_enabled",
-        username,
-        detail: siteHost,
-      };
-      checking.value = false;
+      finish(
+        {
+          status: "user_not_enabled",
+          username,
+          detail: `No OpsPilot Settings row for ${username}.`,
+        },
+        focused,
+      );
       return;
     }
 
-    siteGate.value = { status: "ok", username, detail: siteHost };
-  } catch {
-    if (seq !== probeSeq) return;
-    siteGate.value = {
-      status: "not_logged_in",
-      username: "",
-      detail: siteHost,
-    };
+    finish(
+      {
+        status: "ok",
+        username,
+        detail: focused.siteKey,
+      },
+      focused,
+    );
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    finish(
+      {
+        status: "wrong_tab",
+        username: "",
+        detail: msg || "Could not probe this tab.",
+      },
+      focusedSite.value,
+    );
   } finally {
+    window.clearTimeout(watchdog);
     if (seq === probeSeq) checking.value = false;
   }
 }
 
+function scheduleProbe(force = false) {
+  if (debounceTimer != null) {
+    window.clearTimeout(debounceTimer);
+  }
+  debounceTimer = window.setTimeout(() => {
+    debounceTimer = null;
+    void refreshGate({ force });
+  }, force ? 0 : 150);
+}
+
 function onActivated() {
-  const erpnext = useErpnextStore();
-  void refreshGate(erpnext.siteUrl);
+  scheduleProbe(false);
 }
 
 function onUpdated(
   _tabId: number,
-  changeInfo: chrome.tabs.TabChangeInfo,
+  changeInfo: { status?: string; url?: string },
   tab: chrome.tabs.Tab,
 ) {
   if (changeInfo.status === "complete" || changeInfo.url) {
-    if (tab.active) onActivated();
+    if (tab.active) scheduleProbe(false);
   }
 }
 
 function onFocusChanged() {
-  onActivated();
+  scheduleProbe(false);
 }
 
 function onCookieChanged(changeInfo: chrome.cookies.CookieChangeInfo) {
-  const erpnext = useErpnextStore();
-  const siteHost = hostnameOf(erpnext.siteUrl);
-  if (!siteHost) return;
+  const site = focusedSite.value;
+  if (!site) return;
   const cookieHost = changeInfo.cookie.domain.replace(/^\./, "").toLowerCase();
+  const siteHost = site.siteKey;
   if (
     changeInfo.cookie.name === "sid" &&
     (cookieHost === siteHost ||
@@ -237,26 +309,19 @@ function onCookieChanged(changeInfo: chrome.cookies.CookieChangeInfo) {
       cookieHost.endsWith(`.${siteHost}`) ||
       cookieHost.endsWith(siteHost))
   ) {
-    void refreshGate(erpnext.siteUrl);
+    scheduleProbe(false);
   }
 }
 
 function startListening() {
   if (subscriberCount === 0) {
-    const erpnext = useErpnextStore();
-    void refreshGate(erpnext.siteUrl);
+    void refreshGate({ force: true });
     chrome.tabs.onActivated.addListener(onActivated);
     chrome.tabs.onUpdated.addListener(onUpdated);
     chrome.windows.onFocusChanged.addListener(onFocusChanged);
     if (chrome.cookies?.onChanged) {
       chrome.cookies.onChanged.addListener(onCookieChanged);
     }
-    siteUrlWatchStop = watch(
-      () => erpnext.siteUrl,
-      (url) => {
-        void refreshGate(url);
-      },
-    );
   }
   subscriberCount += 1;
 }
@@ -270,15 +335,30 @@ function stopListening() {
     if (chrome.cookies?.onChanged) {
       chrome.cookies.onChanged.removeListener(onCookieChanged);
     }
-    siteUrlWatchStop?.();
-    siteUrlWatchStop = null;
+    if (debounceTimer != null) {
+      window.clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
   }
 }
 
 export function useErpnextContext() {
   const erpnext = useErpnextStore();
 
-  const siteHost = computed(() => hostnameOf(erpnext.siteUrl) ?? "");
+  const siteHost = computed(
+    () =>
+      focusedSite.value?.siteKey ||
+      hostnameOf(erpnext.siteUrl) ||
+      "",
+  );
+
+  const activeSiteKey = computed(
+    () => focusedSite.value?.siteKey ?? siteKeyFromUrl(erpnext.siteUrl),
+  );
+
+  const activeSiteUrl = computed(
+    () => focusedSite.value?.siteUrl || erpnext.siteUrl.trim() || "",
+  );
 
   const isErpnextActive = computed(() => siteGate.value.status === "ok");
 
@@ -291,11 +371,13 @@ export function useErpnextContext() {
   });
 
   return {
-    page,
     checking,
     siteHost,
     siteGate,
+    focusedSite,
+    activeSiteKey,
+    activeSiteUrl,
     isErpnextActive,
-    refresh: () => refreshGate(erpnext.siteUrl),
+    refresh: () => refreshGate({ force: true }),
   };
 }

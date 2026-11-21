@@ -54,20 +54,16 @@ async function onOpenPreview() {
         props.artifact.path,
       );
       layout.openPdfPreview(url, filename);
+      status.value = "Opened in new tab";
     } else {
-      const { fsReadText } = await import("../lib/tauri");
-      const raw = await fsReadText(gateway.connection, props.artifact.path);
-      const text =
-        typeof raw === "string"
-          ? raw
-          : typeof (raw as { content?: string })?.content === "string"
-            ? (raw as { content: string }).content
-            : typeof (raw as { text?: string })?.text === "string"
-              ? (raw as { text: string }).text
-              : JSON.stringify(raw);
+      const { fetchGatewayHtmlText } = await import("../lib/fetchGatewayHtml");
+      const text = await fetchGatewayHtmlText(
+        gateway.connection,
+        props.artifact.path,
+      );
       layout.openHtmlDocument(text, props.artifact.filename, { force: true });
+      status.value = "Opened in new tab";
     }
-    status.value = null;
   } catch (err) {
     status.value =
       err instanceof Error ? err.message : `Preview failed: ${String(err)}`;

@@ -161,27 +161,6 @@ html.opspilot-sidepanel body {
   color: #5a5a5a;
 }
 
-.side-page-context {
-  border-radius: 14px;
-  border: 1px solid #ebebeb;
-  background: #fafafa;
-  padding: 10px 10px 10px 12px;
-}
-
-.side-page-favicon {
-  display: inline-flex;
-  height: 28px;
-  width: 28px;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  border-radius: 7px;
-  background: #111;
-  color: #fff;
-  font-size: 12px;
-  font-weight: 600;
-}
-
 .side-composer-card {
   border-radius: 20px;
   border: 1px solid #e6e6e6;
@@ -203,8 +182,18 @@ html.opspilot-sidepanel body {
   font-size: 14px;
   line-height: 1.45;
   color: var(--side-ink);
-  outline: none;
-  box-shadow: none;
+  /* Kill UA / frappe-ui focus rings — the outer card already frames the field. */
+  outline: none !important;
+  box-shadow: none !important;
+  --tw-ring-shadow: 0 0 #0000;
+  --tw-ring-offset-shadow: 0 0 #0000;
+}
+
+.side-composer-input:focus,
+.side-composer-input:focus-visible {
+  outline: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
 }
 
 .side-composer-input::placeholder {

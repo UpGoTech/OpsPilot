@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import {
+  erpnextActivateSite,
   erpnextAdoptBrowserSession,
   erpnextFetchOpspilotSettings,
   erpnextLogin,
@@ -9,7 +10,7 @@ import {
   getErpnextConfig,
   getErpnextSession,
   saveErpnextConfig,
-} from "../lib/tauri";
+} from "../lib/native";
 import type {
   AuthMode,
   ConnectionConfig,
@@ -191,10 +192,17 @@ export const useErpnextStore = defineStore("erpnext", () => {
     return session;
   }
 
+  /** Bind Pinia to a Desk site (hostname) without logging in yet. */
+  async function activateSite(url: string) {
+    const key = await erpnextActivateSite(url);
+    siteUrl.value = url.trim();
+    return key;
+  }
+
   /** Side panel: use the Desk browser session instead of a password form. */
-  async function adoptBrowserSession() {
+  async function adoptBrowserSession(preferredSiteUrl?: string) {
     clearAccessError();
-    const session = await erpnextAdoptBrowserSession();
+    const session = await erpnextAdoptBrowserSession(preferredSiteUrl);
     loggedIn.value = session.loggedIn;
     user.value = session.user ?? "";
     fullName.value = session.fullName ?? "";
@@ -209,6 +217,19 @@ export const useErpnextStore = defineStore("erpnext", () => {
       }
     }
     return session;
+  }
+
+  /** Soft reset UI when switching to another OpsPilot site. */
+  function resetForSiteSwitch(nextSiteUrl: string) {
+    siteUrl.value = nextSiteUrl.trim();
+    loggedIn.value = false;
+    user.value = "";
+    fullName.value = "";
+    clearAccessError();
+    bootPhase.value = nextSiteUrl.trim() ? "needs_login" : "needs_url";
+    connectProgress.value = 0;
+    connectStatus.value = "";
+    connectDetail.value = "";
   }
 
   async function logout() {
@@ -334,7 +355,9 @@ export const useErpnextStore = defineStore("erpnext", () => {
     saveSiteUrl,
     rememberUsername,
     login,
+    activateSite,
     adoptBrowserSession,
+    resetForSiteSwitch,
     logout,
     probeSupport,
     fetchSettings,

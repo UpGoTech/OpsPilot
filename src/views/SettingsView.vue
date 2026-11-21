@@ -65,17 +65,19 @@ async function onSave() {
   >
     <div v-if="!props.embedded" class="mb-8">
       <h1 class="text-xl font-semibold tracking-tight text-ink-gray-9">
-        Settings
+        Site details
       </h1>
       <p class="mt-1 text-sm text-ink-gray-6">
-        Connect OpsPilot to your site. AI access is managed per user in Desk
-        (<span class="font-medium text-ink-gray-8">OpsPilot Settings</span>).
+        OpsPilot opens only on Desk tabs where
+        <span class="font-medium text-ink-gray-8">opspilot_frappe</span> is
+        installed. Each site keeps its own AI connection. Credentials stay in
+        Desk (<span class="font-medium text-ink-gray-8">OpsPilot Settings</span>).
       </p>
     </div>
     <div v-else class="mb-6">
       <p class="text-sm text-ink-gray-6">
-        Connect OpsPilot to your site. AI access is managed per user in Desk
-        (<span class="font-medium text-ink-gray-8">OpsPilot Settings</span>).
+        OpsPilot follows the focused Desk tab. Optional override below if you
+        need to point at a specific site URL (local bench ports, etc.).
       </p>
     </div>
 
@@ -83,15 +85,15 @@ async function onSave() {
       <FormControl
         v-model="form.siteUrl"
         type="text"
-        label="OpsPilot site URL"
+        label="Current / preferred site URL"
         placeholder="https://erp.example.com"
         autocomplete="url"
       />
 
       <p class="text-xs text-ink-gray-5">
-        After you save, sign in on your Desk tab — the side panel uses that
-        browser session (no separate OpsPilot password). Local bench example:
-        <span class="font-medium text-ink-gray-7">http://sitename.localhost</span>
+        Normally leave this alone — open the Desk tab you want and OpsPilot
+        binds to that hostname. Local bench example:
+        <span class="font-medium text-ink-gray-7">http://sitename.localhost:8000</span>
         (use <span class="font-medium text-ink-gray-7">http</span>, not https).
       </p>
 

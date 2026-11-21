@@ -1,8 +1,14 @@
+import { isPlaceholderArtifactPath } from "./artifactPlaceholders";
 import { gatewayPathFromHref } from "./gatewayPaths";
 import { scrubServerPaths } from "./scrubServerPaths";
 
-/** Binary / downloadable artifacts shown as inline Download cards (not PDF preview). */
+/**
+ * Downloadable / previewable workspace artifacts (PDF has its own extractor).
+ * Include html/htm so path-only replies still get Preview / Download cards.
+ */
 export const DOWNLOADABLE_EXT = new Set([
+  "html",
+  "htm",
   "zip",
   "rar",
   "7z",
@@ -19,8 +25,8 @@ export const DOWNLOADABLE_EXT = new Set([
   "rtf",
 ]);
 
-/** Default Hermes remote attachments folder (seen in agent tool output). */
-const DEFAULT_ATTACH_DIRS = ["/opt/data/attachments"];
+/** Default dirs when the agent names a bare `Foo.html` in tool logs. */
+const DEFAULT_ATTACH_DIRS = ["/opt/data", "/opt/data/attachments"];
 
 export interface FileArtifact {
   path: string;
@@ -38,8 +44,14 @@ function extOf(path: string): string {
   return dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
 
+function isGlobbish(path: string): boolean {
+  return /[*?[\]{}]|^\*\./.test(path) || filenameOf(path).startsWith("*.");
+}
+
 function pushUnique(out: FileArtifact[], path: string) {
   const cleaned = path.replace(/[.,;:]+$/, "");
+  if (isGlobbish(cleaned)) return;
+  if (isPlaceholderArtifactPath(cleaned)) return;
   const ext = extOf(cleaned);
   if (!DOWNLOADABLE_EXT.has(ext)) return;
   if (out.some((p) => p.path === cleaned)) return;
@@ -77,6 +89,15 @@ function collectAbsolutePaths(raw: string, out: FileArtifact[]) {
     if (resolved) pushUnique(out, resolved);
   }
 
+  // Quoted / assigned: path="/opt/data/Foo.html"
+  const assigned = new RegExp(
+    `(?:^|[\\s=:(])["'\`](\\/(?:opt|home|tmp|var|Users|data)\\/[^"'\`\\s]+\\.(?:${EXT_ALT}))["'\`]`,
+    "gim",
+  );
+  while ((m = assigned.exec(raw))) {
+    pushUnique(out, m[1]);
+  }
+
   const bareAbs = new RegExp(
     `(?:^|[\\s(])(\\/(?:opt|home|tmp|var|Users|data)\\/[^\\s)\\]>"']+\\.(?:${EXT_ALT}))`,
     "gm",
@@ -92,27 +113,74 @@ function collectAbsolutePaths(raw: string, out: FileArtifact[]) {
  */
 function collectBareFilenames(raw: string): string[] {
   const names: string[] = [];
+  const pushName = (name: string) => {
+    if (!name || isGlobbish(name)) return;
+    if (!names.some((n) => n.toLowerCase() === name.toLowerCase())) {
+      names.push(name);
+    }
+  };
+
   const labeled = new RegExp(
     `(?:^|[\\s"'])(?:zip|archive|output|wrote|writing|saved(?:\\s+as)?|created|file)\\s*[:＝=]\\s*[\`"']?([\\w.\\-]+\\.(?:${EXT_ALT}))[\`"']?`,
     "gim",
   );
   let m: RegExpExecArray | null;
   while ((m = labeled.exec(raw))) {
-    names.push(m[1]);
+    pushName(m[1]);
   }
 
-  // Standalone filename on its own line (all_attachments.zip)
+  // Standalone filename on its own line (all_attachments.zip) — not globs (*.html).
   const lone = new RegExp(
-    `(?:^|\\n)[ \\t]*[\`"']?([\\w.\\-]+\\.(?:${EXT_ALT}))[\`"']?[ \\t]*(?=\\n|$)`,
+    `(?:^|\\n)[ \\t]*[\`"']?([A-Za-z0-9_][\\w.\\-]*\\.(?:${EXT_ALT}))[\`"']?[ \\t]*(?=\\n|$)`,
     "gim",
   );
   while ((m = lone.exec(raw))) {
-    // Skip if it looks like a contents listing of an *inner* file only when
-    // we already have a zip card — still OK to offer download for xlsx too.
-    names.push(m[1]);
+    pushName(m[1]);
+  }
+
+  // Any downloadable filename token in prose (FabriXcel_Projects_Interactive.html).
+  const any = new RegExp(
+    `\\b([A-Za-z0-9_][\\w.\\-]*\\.(?:${EXT_ALT}))\\b`,
+    "gi",
+  );
+  while ((m = any.exec(raw))) {
+    pushName(m[1]);
   }
 
   return names;
+}
+
+/** User/assistant text that is clearly about an HTML workspace file. */
+export function refersToHtmlArtifact(...texts: string[]): boolean {
+  const raw = texts.filter(Boolean).join("\n");
+  if (!raw.trim()) return false;
+  if (/\.html?\b/i.test(raw)) return true;
+  if (/\b::preview\b/i.test(raw)) return true;
+  if (
+    /\b(?:interactive|self-contained|dashboard|preview)\b/i.test(raw) &&
+    /\b(?:html|htm|file|page|report)\b/i.test(raw)
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:show|open|download|last(?:\s+generated)?)\b/i.test(raw) &&
+    /\b(?:html|htm)\b/i.test(raw)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Most recent HTML/HTM path found by scanning texts newest-last. */
+export function lastHtmlPathFromTexts(texts: string[]): string | null {
+  let last: string | null = null;
+  for (const text of texts) {
+    if (!text?.trim()) continue;
+    for (const file of extractFileArtifacts(text)) {
+      if (file.ext === "html" || file.ext === "htm") last = file.path;
+    }
+  }
+  return last;
 }
 
 function attachDirsFrom(artifacts: FileArtifact[]): string[] {
@@ -166,6 +234,8 @@ export function stripFilePathNoise(
 
 export function labelForExt(ext: string): string {
   const map: Record<string, string> = {
+    html: "HTML",
+    htm: "HTML",
     zip: "ZIP",
     rar: "RAR",
     "7z": "7Z",

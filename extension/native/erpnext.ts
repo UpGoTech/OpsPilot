@@ -3,16 +3,64 @@ import type {
   ErpnextSessionInfo,
   OpsPilotSettingsPayload,
 } from "../../src/types";
+import {
+  getActiveTabUrl,
+  hostnameOf,
+  originOf,
+  readBrowserSid,
+} from "./browserSession";
+import { setActiveConnectionSiteKey } from "./connection";
+import { setActiveSiteKey } from "./gateway";
+import { siteKeyFromUrl, siteUrlFromTabUrl } from "./siteKey";
 import { localGet, localSet, sessionGet, sessionRemove, sessionSet } from "./storage";
+import {
+  findSiteTabId,
+  tabFetchJson,
+  tabGetLoggedUser,
+  tabGetOpspilotSettings,
+  tabPingOpspilot,
+} from "./tabRpc";
 
 const CONFIG_KEY = "opspilot.erpnext";
 const SESSION_KEY = "opspilot.erpnext.session";
+const SESSIONS_KEY = "opspilot.erpnext.sessions";
 
 interface SessionRecord {
   sid: string;
   user: string;
   fullName: string;
   siteUrl: string;
+}
+
+/** Focused OpsPilot site — sessions and settings resolve against this. */
+let activeErpnextSiteKey: string | null = null;
+
+export function getActiveErpnextSiteKey(): string | null {
+  return activeErpnextSiteKey;
+}
+
+export function setActiveErpnextSiteKey(siteKey: string | null): void {
+  activeErpnextSiteKey = siteKey?.trim()
+    ? siteKey.trim().toLowerCase()
+    : null;
+  setActiveSiteKey(activeErpnextSiteKey);
+  setActiveConnectionSiteKey(activeErpnextSiteKey);
+}
+
+export async function activateSite(siteUrl: string): Promise<string> {
+  const key = siteKeyFromUrl(siteUrl);
+  if (!key) throw new Error("Invalid OpsPilot site URL");
+  setActiveErpnextSiteKey(key);
+  const config = await loadConfig();
+  if (config.siteUrl.trim() !== normalizeSiteUrl(siteUrl)) {
+    await saveConfig({
+      siteUrl,
+      lastUsername: config.lastUsername,
+    });
+  } else if (!config.siteUrl.trim()) {
+    await saveConfig({ siteUrl, lastUsername: config.lastUsername });
+  }
+  return key;
 }
 
 function isLocalhostName(host: string): boolean {
@@ -152,16 +200,69 @@ async function withDeadline<T>(promise: Promise<T>, secs: number): Promise<T> {
   }
 }
 
-async function readSession(): Promise<SessionRecord | null> {
-  const stored = await sessionGet<Record<string, SessionRecord | undefined>>(SESSION_KEY);
-  return stored[SESSION_KEY] ?? null;
+async function readSessionMap(): Promise<Record<string, SessionRecord>> {
+  const stored = await sessionGet<
+    Record<string, Record<string, SessionRecord> | SessionRecord | undefined>
+  >([SESSIONS_KEY, SESSION_KEY]);
+  const map =
+    (stored[SESSIONS_KEY] as Record<string, SessionRecord> | undefined) ?? {};
+  const legacy = stored[SESSION_KEY] as SessionRecord | undefined;
+  if (legacy?.sid && legacy.siteUrl) {
+    const key = siteKeyFromUrl(legacy.siteUrl);
+    if (key && !map[key]) {
+      map[key] = legacy;
+      await sessionSet({ [SESSIONS_KEY]: map });
+    }
+  }
+  return map;
 }
 
-async function writeSession(session: SessionRecord | null): Promise<void> {
+async function readSession(siteKey?: string | null): Promise<SessionRecord | null> {
+  const key = (siteKey ?? activeErpnextSiteKey ?? "").trim().toLowerCase();
+  if (!key) {
+    // Fall back to legacy single session when no active site yet.
+    const stored = await sessionGet<Record<string, SessionRecord | undefined>>(
+      SESSION_KEY,
+    );
+    return stored[SESSION_KEY] ?? null;
+  }
+  const map = await readSessionMap();
+  return map[key] ?? null;
+}
+
+async function writeSession(
+  session: SessionRecord | null,
+  siteKey?: string | null,
+): Promise<void> {
+  const key =
+    (siteKey ??
+      activeErpnextSiteKey ??
+      (session?.siteUrl ? siteKeyFromUrl(session.siteUrl) : null) ??
+      "").trim().toLowerCase();
+
   if (!session || !session.sid) {
-    await sessionRemove(SESSION_KEY);
+    if (!key) {
+      await sessionRemove(SESSION_KEY);
+      return;
+    }
+    const map = await readSessionMap();
+    delete map[key];
+    await sessionSet({ [SESSIONS_KEY]: map });
+    // Keep legacy mirror in sync for the active site.
+    if (key === activeErpnextSiteKey) await sessionRemove(SESSION_KEY);
     return;
   }
+
+  if (key) {
+    const map = await readSessionMap();
+    map[key] = session;
+    await sessionSet({
+      [SESSIONS_KEY]: map,
+      [SESSION_KEY]: session,
+    });
+    return;
+  }
+
   await sessionSet({ [SESSION_KEY]: session });
 }
 
@@ -192,19 +293,20 @@ export async function saveConfig(config: ErpnextConfig): Promise<ErpnextConfig> 
 export async function sessionInfo(): Promise<ErpnextSessionInfo> {
   const config = await loadConfig();
   const session = await readSession();
+  const siteUrl = session?.siteUrl || config.siteUrl;
   if (!session?.sid) {
     return {
       loggedIn: false,
       user: "",
       fullName: "",
-      siteUrl: config.siteUrl,
+      siteUrl,
     };
   }
   return {
     loggedIn: true,
     user: session.user,
     fullName: session.fullName,
-    siteUrl: session.siteUrl || config.siteUrl,
+    siteUrl,
   };
 }
 
@@ -282,30 +384,61 @@ export async function logout(): Promise<void> {
   await writeSession(null);
 }
 
+async function resolveSiteTab(
+  preferredSiteUrl?: string,
+): Promise<{ tabId: number; tabUrl: string; siteUrl: string }> {
+  const config = await loadConfig();
+  const focusedTabs = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true,
+  });
+  const focused = focusedTabs[0];
+  const focusedUrl = focused?.url ?? (await getActiveTabUrl());
+  const focusedSite = focusedUrl ? siteUrlFromTabUrl(focusedUrl) : null;
+
+  let siteUrl: string | null = null;
+  if (preferredSiteUrl?.trim()) {
+    siteUrl = normalizeSiteUrl(preferredSiteUrl);
+  } else if (focusedSite) {
+    siteUrl = focusedSite;
+  } else if (config.siteUrl.trim()) {
+    siteUrl = normalizeSiteUrl(config.siteUrl);
+  }
+
+  if (!siteUrl) {
+    throw new Error("Open an OpsPilot Desk tab first.");
+  }
+
+  await activateSite(siteUrl);
+
+  let tab = await findSiteTabId(siteUrl);
+  if (
+    !tab &&
+    focused?.id &&
+    focusedUrl &&
+    hostnameOf(focusedUrl) === hostnameOf(siteUrl)
+  ) {
+    tab = { tabId: focused.id, tabUrl: focusedUrl };
+  }
+
+  if (!tab?.tabId) {
+    throw new Error("Open your OpsPilot Desk tab first.");
+  }
+
+  return { tabId: tab.tabId, tabUrl: tab.tabUrl, siteUrl };
+}
+
 /**
  * Adopt the Desk tab session. Identity is read via same-origin fetch inside
  * the tab (extension fetch cannot send the site Cookie header). `sid` is still
  * cached from chrome.cookies when available for later native calls.
  */
-export async function adoptBrowserSession(): Promise<ErpnextSessionInfo> {
-  const { findSiteTabId, tabGetLoggedUser, tabFetchJson } = await import(
-    /* @vite-ignore */ "./tabRpc"
-  );
-  const { getActiveTabUrl, readBrowserSid, originOf } = await import(
-    /* @vite-ignore */ "./browserSession"
-  );
+export async function adoptBrowserSession(
+  preferredSiteUrl?: string,
+): Promise<ErpnextSessionInfo> {
+  const { tabId, tabUrl, siteUrl } = await resolveSiteTab(preferredSiteUrl);
 
-  const config = await loadConfig();
-  if (!config.siteUrl.trim()) {
-    throw new Error("Save an OpsPilot site URL in Settings first.");
-  }
-
-  const tab = await findSiteTabId(config.siteUrl);
-  if (!tab) {
-    throw new Error("Open your OpsPilot Desk tab first.");
-  }
-
-  const user = await tabGetLoggedUser(tab.tabId);
+  const user = await tabGetLoggedUser(tabId);
   if (!user) {
     throw new Error("Not signed in on your OpsPilot site. Sign in on the Desk tab first.");
   }
@@ -313,7 +446,7 @@ export async function adoptBrowserSession(): Promise<ErpnextSessionInfo> {
   let fullName = user;
   try {
     const profile = await tabFetchJson(
-      tab.tabId,
+      tabId,
       `/api/resource/User/${encodeURIComponent(user)}?fields=${encodeURIComponent('["full_name"]')}`,
     );
     if (profile.ok && profile.body && typeof profile.body === "object") {
@@ -324,18 +457,28 @@ export async function adoptBrowserSession(): Promise<ErpnextSessionInfo> {
     // keep username
   }
 
-  const tabUrl = (await getActiveTabUrl()) ?? tab.tabUrl;
-  const cookie = await readBrowserSid(config.siteUrl, tabUrl);
-  const origin = cookie?.origin ?? originOf(tab.tabUrl) ?? normalizeSiteUrl(config.siteUrl);
-  // Prefer a real sid cookie; fall back to a placeholder so session_info is logged-in.
-  // Settings fetch uses tab RPC and does not require this sid.
+  const cookie = await readBrowserSid(siteUrl, tabUrl);
+  const origin =
+    cookie?.origin ?? originOf(tabUrl) ?? siteUrlFromTabUrl(tabUrl) ?? siteUrl;
   const sid = cookie?.sid ?? `tab:${user}`;
+  const key = siteKeyFromUrl(origin) ?? siteKeyFromUrl(siteUrl);
+  if (key) setActiveErpnextSiteKey(key);
 
-  await writeSession({
-    sid,
-    user,
-    fullName,
+  await writeSession(
+    {
+      sid,
+      user,
+      fullName,
+      siteUrl: origin,
+    },
+    key,
+  );
+
+  // Remember last successful site for cold start hints.
+  const config = await loadConfig();
+  await saveConfig({
     siteUrl: origin,
+    lastUsername: user || config.lastUsername,
   });
 
   return {
@@ -347,40 +490,8 @@ export async function adoptBrowserSession(): Promise<ErpnextSessionInfo> {
 }
 
 export async function probeSupport(): Promise<boolean> {
-  const config = await loadConfig();
-  if (!config.siteUrl.trim()) {
-    throw new Error("OpsPilot site URL is not configured.");
-  }
-  const { url, base } = siteApiUrl(
-    config.siteUrl,
-    "/api/method/opspilot_frappe.api.ping",
-  );
-  const response = await withDeadline(
-    fetch(url, {
-      method: "GET",
-      headers: { Accept: "application/json" },
-      credentials: "omit",
-    }),
-    5,
-  );
-  const status = response.status;
-  const text = await response.text();
-  let body: unknown = null;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    body = null;
-  }
-
-  if (status >= 200 && status < 300) return true;
-  if (
-    looksLikeAppMissing(status, text, body) ||
-    text.toLowerCase().includes("not installed")
-  ) {
-    return false;
-  }
-  if (status === 401 || status === 403) return true;
-  throw new Error(httpStatusMessage(status, text, body, "OpsPilot check"));
+  const { tabId } = await resolveSiteTab();
+  return tabPingOpspilot(tabId);
 }
 
 function parseSettingsMessage(message: unknown): OpsPilotSettingsPayload {
@@ -418,26 +529,14 @@ function parseSettingsMessage(message: unknown): OpsPilotSettingsPayload {
 }
 
 export async function fetchOpspilotSettings(): Promise<OpsPilotSettingsPayload | null> {
-  const { findSiteTabId, tabGetOpspilotSettings, tabPingOpspilot } = await import(
-    "./tabRpc"
-  );
+  const { tabId, siteUrl } = await resolveSiteTab();
 
-  const config = await loadConfig();
-  if (!config.siteUrl.trim()) {
-    throw new Error("OpsPilot site URL is not configured.");
-  }
-
-  const tab = await findSiteTabId(config.siteUrl);
-  if (!tab) {
-    throw new Error("Open your OpsPilot Desk tab first.");
-  }
-
-  const appOk = await tabPingOpspilot(tab.tabId);
+  const appOk = await tabPingOpspilot(tabId);
   if (!appOk) {
-    throw new Error(siteUnsupportedMessage(normalizeSiteUrl(config.siteUrl)));
+    throw new Error(siteUnsupportedMessage(normalizeSiteUrl(siteUrl)));
   }
 
-  const result = await tabGetOpspilotSettings(tab.tabId);
+  const result = await tabGetOpspilotSettings(tabId);
   if (result === "unauthorized") {
     await writeSession(null);
     throw new Error("OpsPilot site session expired. Sign in on the Desk tab again.");

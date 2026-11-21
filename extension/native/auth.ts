@@ -1,5 +1,6 @@
 import type { AuthMode, AuthProbe, ConnectionConfig } from "../../src/types";
 import {
+  absorbHermesCookiesFromBrowser,
   collectSetCookies,
   filteredExtraHeaders,
   hasSessionAccessCookie,
@@ -9,6 +10,7 @@ import {
   wsUrlWithTicket,
   wsUrlWithToken,
 } from "./connection";
+import { ensureGatewayTab } from "./gatewayTab";
 
 function applyAuthHeaders(
   headers: Record<string, string>,
@@ -38,10 +40,12 @@ async function meOk(config: ConnectionConfig): Promise<boolean> {
   const cookie = Object.keys(config.cookies ?? {}).length > 0;
   if (!cookie && !config.token?.trim()) return false;
   const base = httpBase(config);
+  await absorbHermesCookiesFromBrowser(config, base);
   const resp = await fetch(`${base}/api/auth/me`, {
     method: "GET",
     headers: applyAuthHeaders({}, config),
-    credentials: "omit",
+    // Match login / ws-ticket — Cookie header is forbidden; jar must attach.
+    credentials: "include",
   });
   return resp.ok;
 }
@@ -120,6 +124,13 @@ export async function probeAuth(config: ConnectionConfig): Promise<AuthProbe> {
   };
 }
 
+/**
+ * Password login for the extension.
+ * Browsers strip Set-Cookie from fetch responses, so we:
+ * 1) POST with credentials:"include" (host_permissions → treated as same-site)
+ * 2) Read hermes_session_* from chrome.cookies
+ * 3) If still empty, run the same POST inside a gateway-origin tab
+ */
 export async function passwordLogin(
   config: ConnectionConfig,
 ): Promise<ConnectionConfig> {
@@ -144,21 +155,25 @@ export async function passwordLogin(
     headers[name] = value;
   }
 
+  const body = JSON.stringify({
+    provider: "basic",
+    username,
+    password,
+    next: "/",
+  });
+
+  // Prefer extension fetch with credentials so the jar accepts Hermes cookies.
   const resp = await fetch(`${base}/auth/password-login`, {
     method: "POST",
     headers,
-    body: JSON.stringify({
-      provider: "basic",
-      username,
-      password,
-      next: "/",
-    }),
-    credentials: "omit",
+    body,
+    credentials: "include",
     redirect: "manual",
   });
 
   const status = resp.status;
   mergeSetCookies(next, collectSetCookies(resp));
+  await absorbHermesCookiesFromBrowser(next, base);
   const text = await resp.text();
 
   if (status < 200 || status >= 400) {
@@ -177,6 +192,12 @@ export async function passwordLogin(
   next.token = "";
 
   if (!hasSessionAccessCookie(next)) {
+    // Same-origin login inside a gateway tab — Set-Cookie always lands in the jar.
+    await passwordLoginViaGatewayTab(base, username, password, headers);
+    await absorbHermesCookiesFromBrowser(next, base);
+  }
+
+  if (!hasSessionAccessCookie(next)) {
     const names = Object.keys(next.cookies ?? {});
     throw new Error(
       `Sign-in succeeded but no hermes_session_at cookie was returned (got cookies: [${names.join(", ")}]). On HTTPS Hermes uses __Host-hermes_session_at.`,
@@ -184,6 +205,67 @@ export async function passwordLogin(
   }
 
   return next;
+}
+
+async function passwordLoginViaGatewayTab(
+  base: string,
+  username: string,
+  password: string,
+  headers: Record<string, string>,
+): Promise<void> {
+  const tab = await ensureGatewayTab(base);
+  try {
+    const injection = await chrome.scripting.executeScript({
+      target: { tabId: tab.tabId },
+      world: "ISOLATED",
+      args: [base, username, password, headers],
+      func: async (
+        gatewayBase: string,
+        user: string,
+        pass: string,
+        hdrs: Record<string, string>,
+      ) => {
+        try {
+          const response = await fetch(`${gatewayBase}/auth/password-login`, {
+            method: "POST",
+            headers: hdrs,
+            body: JSON.stringify({
+              provider: "basic",
+              username: user,
+              password: pass,
+              next: "/",
+            }),
+            credentials: "include",
+            redirect: "manual",
+          });
+          return { ok: response.ok || (response.status >= 200 && response.status < 400), status: response.status };
+        } catch (error) {
+          return {
+            ok: false,
+            status: 0,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      },
+    });
+    const result = injection?.[0]?.result as
+      | { ok?: boolean; status?: number; error?: string }
+      | undefined;
+    if (result?.error) {
+      throw new Error(`Gateway tab sign-in failed: ${result.error}`);
+    }
+    if (result && result.ok === false && (result.status ?? 0) >= 400) {
+      throw new Error(`Gateway tab sign-in failed (HTTP ${result.status})`);
+    }
+  } finally {
+    if (tab.created) {
+      try {
+        await chrome.tabs.remove(tab.tabId);
+      } catch {
+        // ignore
+      }
+    }
+  }
 }
 
 export async function mintWsTicket(config: ConnectionConfig): Promise<string> {
@@ -195,7 +277,8 @@ export async function mintWsTicket(config: ConnectionConfig): Promise<string> {
   const resp = await fetch(`${base}/api/auth/ws-ticket`, {
     method: "POST",
     headers: applyAuthHeaders({}, config),
-    credentials: "omit",
+    // Prefer Cookie header we absorbed; also allow jar cookies.
+    credentials: "include",
   });
   const status = resp.status;
   const text = await resp.text();

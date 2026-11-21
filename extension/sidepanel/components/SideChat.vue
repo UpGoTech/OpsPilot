@@ -12,9 +12,9 @@ import { useLayoutStore } from "../../../src/stores/layout";
 import { useSessionsStore } from "../../../src/stores/sessions";
 import { useTabsStore } from "../../../src/stores/tabs";
 import { useErpnextContext } from "../composables/useErpnextContext";
+import { useHermesSiteLinks } from "../composables/useHermesSiteLinks";
 import SideComposer from "./SideComposer.vue";
 import SideHeader from "./SideHeader.vue";
-import SidePageContext from "./SidePageContext.vue";
 import SideSuggestions from "./SideSuggestions.vue";
 
 const emit = defineEmits<{
@@ -27,7 +27,8 @@ const gateway = useGatewayStore();
 const layout = useLayoutStore();
 const sessions = useSessionsStore();
 const tabs = useTabsStore();
-const { page, isErpnextActive } = useErpnextContext();
+const { isErpnextActive } = useErpnextContext();
+useHermesSiteLinks();
 
 const composer = ref<InstanceType<typeof SideComposer> | null>(null);
 const seed = ref("");
@@ -43,15 +44,19 @@ const showEmpty = computed(
 );
 
 const composerPlaceholder = computed(() =>
-  showEmpty.value
-    ? "How can I help you today?"
-    : "Ask a question about the content of this page",
+  showEmpty.value ? "How can I help you today?" : "Message OpsPilot…",
 );
 
 async function createNew() {
   if (chatDisabled.value) return;
   layout.closeAgentHistory();
-  await sessions.create();
+  try {
+    await tabs.newTabSession();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    chat.error = message;
+    sessions.error = message;
+  }
 }
 
 async function onHistoryPicked() {
@@ -69,7 +74,7 @@ async function exportTranscript() {
     sessions.sessions.find((s) => s.id === sessions.activeId)?.title ||
     tabs.tabs.find((t) => t.id === sessions.activeId)?.title ||
     "chat";
-  const md = transcriptToMarkdown(chat.turns, title);
+  const md = transcriptToMarkdown(title, chat.messages);
   downloadTextFile(`${title.replace(/[^\w.\-]+/g, "_") || "chat"}.md`, md);
 }
 </script>
@@ -82,6 +87,7 @@ async function exportTranscript() {
       @history="layout.openAgentHistory()"
       @new-chat="createNew"
       @export="exportTranscript"
+      @refresh="chat.reprocessTranscript()"
     />
 
     <div
@@ -92,9 +98,9 @@ async function exportTranscript() {
       <button
         type="button"
         class="shrink-0 text-[12px] font-medium underline"
-        @click="emit('settings')"
+        @click="gateway.connect().catch(() => undefined)"
       >
-        Settings
+        Reconnect
       </button>
     </div>
 
@@ -135,6 +141,12 @@ async function exportTranscript() {
 
     <template v-else>
       <div class="side-chat-body min-h-0 flex-1 overflow-y-auto px-3 pt-2">
+        <div
+          v-if="showEmpty && chat.error"
+          class="mb-2 rounded-md border border-[#fecdca] bg-[#fef3f2] px-3 py-2 text-[12px] text-[#b42318]"
+        >
+          {{ chat.error }}
+        </div>
         <SideSuggestions
           v-if="showEmpty"
           :disabled="chatDisabled"
@@ -144,7 +156,6 @@ async function exportTranscript() {
       </div>
 
       <div class="shrink-0 bg-white pt-1">
-        <SidePageContext :page="page" :active="isErpnextActive" />
         <SideComposer
           ref="composer"
           :placeholder="composerPlaceholder"

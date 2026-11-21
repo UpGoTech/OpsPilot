@@ -34,16 +34,29 @@ export async function handleCommand(
     case "erpnext_logout":
       return erpnext.logout();
     case "erpnext_adopt_browser_session":
-      return erpnext.adoptBrowserSession();
+      return erpnext.adoptBrowserSession(
+        args.siteUrl ? String(args.siteUrl) : undefined,
+      );
     case "erpnext_probe_support":
       return erpnext.probeSupport();
     case "erpnext_fetch_opspilot_settings":
       return erpnext.fetchOpspilotSettings();
+    case "erpnext_activate_site":
+      return erpnext.activateSite(String(args.siteUrl ?? ""));
+    case "get_active_site_key":
+      return erpnext.getActiveErpnextSiteKey();
+    case "gateway_site_state":
+      return gateway.getSiteGatewayState(String(args.siteKey ?? ""));
 
     case "get_connection":
-      return connection.loadConnection();
+      return connection.loadConnection(
+        args.siteKey ? String(args.siteKey) : undefined,
+      );
     case "save_connection":
-      return connection.saveConnection(args.config as ConnectionConfig);
+      return connection.saveConnection(
+        args.config as ConnectionConfig,
+        args.siteKey ? String(args.siteKey) : undefined,
+      );
     case "probe_auth":
       return auth.probeAuth(args.config as ConnectionConfig);
     case "password_login": {
@@ -55,18 +68,34 @@ export async function handleCommand(
       return fs.testConnection(args.config as ConnectionConfig);
     case "gateway_connect": {
       const config = args.config as ConnectionConfig;
-      await connection.saveConnection(config);
-      await gateway.gatewayConnect(config);
+      const siteKey = args.siteKey ? String(args.siteKey) : undefined;
+      await connection.saveConnection(config, siteKey);
+      await gateway.gatewayConnect(config, siteKey);
       return null;
     }
     case "gateway_disconnect":
-      await gateway.gatewayDisconnect();
+      await gateway.gatewayDisconnect(
+        args.siteKey ? String(args.siteKey) : undefined,
+      );
       return null;
     case "gateway_rpc":
       return gateway.gatewayRpc(
         String(args.method ?? ""),
         args.params ?? null,
       );
+    case "gateway_respond":
+      await gateway.gatewayRespond(
+        String(args.id ?? ""),
+        args.result ?? null,
+      );
+      return null;
+    case "gateway_fail":
+      await gateway.gatewayFail(
+        String(args.id ?? ""),
+        Number(args.code ?? -32601),
+        String(args.message ?? "Method not found"),
+      );
+      return null;
 
     case "fs_default_cwd":
       return fs.defaultCwd(args.config as ConnectionConfig);

@@ -8,10 +8,12 @@ const emit = defineEmits<{
   history: [];
   newChat: [];
   export: [];
+  refresh: [];
 }>();
 
 const menuOpen = ref(false);
 const menuBtn = ref<HTMLElement | null>(null);
+const brandMark = chrome.runtime.getURL("icons/icon-48.png");
 
 function toggleMenu() {
   menuOpen.value = !menuOpen.value;
@@ -50,11 +52,42 @@ onUnmounted(() => {
 
 <template>
   <header class="side-header relative z-40 flex h-12 shrink-0 items-center px-4">
-    <div class="side-brand text-[15px] font-semibold tracking-[-0.01em]">
+    <div class="side-brand flex items-center gap-2 text-[15px] font-semibold tracking-[-0.01em]">
+      <img
+        class="side-brand-mark h-[22px] w-[22px] shrink-0"
+        :src="brandMark"
+        width="22"
+        height="22"
+        alt=""
+      />
       OpsPilot
     </div>
 
     <div class="ml-auto flex items-center gap-0.5">
+      <button
+        type="button"
+        class="side-icon-btn"
+        title="Refresh transcript"
+        @click="emit('refresh')"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.75"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+          <path d="M3 3v5h5" />
+          <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+          <path d="M16 16h5v5" />
+        </svg>
+      </button>
+
       <button
         type="button"
         class="side-icon-btn"

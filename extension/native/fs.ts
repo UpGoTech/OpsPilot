@@ -1,10 +1,15 @@
 import type { ConnectionConfig } from "../../src/types";
 import {
+  absorbHermesCookiesFromBrowser,
   cookieHeader,
   filteredExtraHeaders,
   httpBase,
   percentEncode,
 } from "./connection";
+import {
+  fetchBytesViaGatewayTab,
+  fetchJsonViaGatewayTab,
+} from "./gatewayTab";
 
 export interface StatusProbe {
   ok: boolean;
@@ -40,6 +45,8 @@ function applyAuth(
   if (!cookie && !token) {
     throw new Error("Not authenticated — sign in or provide a session token");
   }
+  // Belt-and-suspenders: Chrome often strips Cookie; jar + credentials:include
+  // is the real path. Token gateways use the custom header below.
   if (cookie) out.Cookie = cookie;
   if (token) out["X-Hermes-Session-Token"] = token;
   for (const [name, value] of filteredExtraHeaders(config)) {
@@ -48,16 +55,60 @@ function applyAuth(
   return out;
 }
 
+function httpErrorDetail(status: number, body: unknown): string {
+  const detail =
+    body && typeof body === "object"
+      ? ((body as Record<string, unknown>).detail ??
+        (body as Record<string, unknown>).error ??
+        (body as Record<string, unknown>).message ??
+        body)
+      : body;
+  return `HTTP ${status}: ${detail}`;
+}
+
+/**
+ * Authenticated gateway fetch. Uses credentials:"include" so chrome.cookies
+ * attach (manual Cookie is a forbidden header in extension pages).
+ */
+async function authorizedFetch(
+  config: ConnectionConfig,
+  pathAndQuery: string,
+  init?: RequestInit,
+): Promise<Response> {
+  const base = httpBase(config);
+  await absorbHermesCookiesFromBrowser(config, base);
+  const headers = applyAuth(
+    Object.fromEntries(
+      new Headers(init?.headers).entries(),
+    ) as Record<string, string>,
+    config,
+  );
+  let response = await fetch(`${base}${pathAndQuery}`, {
+    ...init,
+    method: init?.method ?? "GET",
+    headers,
+    credentials: "include",
+  });
+
+  if (response.status === 401 || response.status === 403) {
+    await absorbHermesCookiesFromBrowser(config, base);
+    const retryHeaders = applyAuth({}, config);
+    response = await fetch(`${base}${pathAndQuery}`, {
+      ...init,
+      method: init?.method ?? "GET",
+      headers: retryHeaders,
+      credentials: "include",
+    });
+  }
+
+  return response;
+}
+
 async function authorizedGet(
   config: ConnectionConfig,
   pathAndQuery: string,
 ): Promise<{ status: number; body: unknown }> {
-  const base = httpBase(config);
-  const response = await fetch(`${base}${pathAndQuery}`, {
-    method: "GET",
-    headers: applyAuth({}, config),
-    credentials: "omit",
-  });
+  const response = await authorizedFetch(config, pathAndQuery);
   const status = response.status;
   const text = await response.text();
   let body: unknown = null;
@@ -68,15 +119,18 @@ async function authorizedGet(
       body = text;
     }
   }
+
+  if (status === 401 || status === 403) {
+    const base = httpBase(config);
+    const tabbed = await fetchJsonViaGatewayTab(base, pathAndQuery);
+    if (tabbed.status < 200 || tabbed.status >= 300) {
+      throw new Error(httpErrorDetail(tabbed.status, tabbed.body));
+    }
+    return tabbed;
+  }
+
   if (status < 200 || status >= 300) {
-    const detail =
-      body && typeof body === "object"
-        ? ((body as Record<string, unknown>).detail ??
-          (body as Record<string, unknown>).error ??
-          (body as Record<string, unknown>).message ??
-          body)
-        : body;
-    throw new Error(`HTTP ${status}: ${detail}`);
+    throw new Error(httpErrorDetail(status, body));
   }
   return { status, body };
 }
@@ -162,6 +216,13 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+function base64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
 function splitDataUrl(dataUrl: string): { mime: string; b64: string } | null {
   const match = /^data:([^;,]+)?(?:;base64)?,(.+)$/i.exec(dataUrl);
   if (!match) return null;
@@ -176,19 +237,35 @@ async function fetchRemoteBytes(
   let mime = guessMime(filename);
   const encoded = percentEncode(path);
   const base = httpBase(config);
+  const downloadPath = `/api/fs/download?path=${encoded}`;
 
-  const downloadUrl = `${base}/api/fs/download?path=${encoded}`;
-  const response = await fetch(downloadUrl, {
-    method: "GET",
-    headers: applyAuth({}, config),
-    credentials: "omit",
+  const response = await authorizedFetch(config, downloadPath, {
+    headers: { Accept: "*/*" },
   });
   if (response.ok) {
     const buf = new Uint8Array(await response.arrayBuffer());
+    const ct = response.headers.get("content-type");
+    if (ct) mime = ct.split(";")[0].trim() || mime;
     return { filename, mime, bytes: buf };
   }
 
   const status = response.status;
+
+  // Gateway-tab same-origin fallback when Cookie header was stripped.
+  if (status === 401 || status === 403) {
+    try {
+      const tabbed = await fetchBytesViaGatewayTab(base, downloadPath);
+      if (tabbed.status >= 200 && tabbed.status < 300 && tabbed.base64) {
+        if (tabbed.contentType) {
+          mime = tabbed.contentType.split(";")[0].trim() || mime;
+        }
+        return { filename, mime, bytes: base64ToBytes(tabbed.base64) };
+      }
+    } catch {
+      // fall through to data-url
+    }
+  }
+
   const { body } = await authorizedGet(
     config,
     `/api/fs/read-data-url?path=${encoded}`,
@@ -211,10 +288,7 @@ async function fetchRemoteBytes(
   const parsed = splitDataUrl(dataUrl);
   if (!parsed) throw new Error("Gateway returned no data URL for this file");
   if (parsed.mime) mime = parsed.mime;
-  const binary = atob(parsed.b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return { filename, mime, bytes };
+  return { filename, mime, bytes: base64ToBytes(parsed.b64) };
 }
 
 export async function downloadFile(
@@ -237,9 +311,7 @@ export async function downloadToDownloads(
   path: string,
 ): Promise<SavedLocalFile> {
   const file = await downloadFile(config, path);
-  const binary = atob(file.base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const bytes = base64ToBytes(file.base64);
   const blob = new Blob([bytes], { type: file.mime });
   const objectUrl = URL.createObjectURL(blob);
 
@@ -249,7 +321,6 @@ export async function downloadToDownloads(
       filename: file.filename,
       saveAs: false,
     });
-    // Revoke after Chromium has had a chance to start the download.
     setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
     return {
       remotePath: path,
@@ -277,11 +348,8 @@ export async function downloadToPath(
   path: string,
   _dest: string,
 ): Promise<SavedLocalFile> {
-  // Chromium cannot write arbitrary paths; offer Save As via downloads API.
   const file = await downloadFile(config, path);
-  const binary = atob(file.base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const bytes = base64ToBytes(file.base64);
   const blob = new Blob([bytes], { type: file.mime });
   const objectUrl = URL.createObjectURL(blob);
 
@@ -313,15 +381,13 @@ export async function downloadToPath(
   };
 }
 
-/** Preview via blob URL (works in Chrome / Brave / Edge iframes). */
+/** Preview via blob URL (works in Chrome / Brave / Edge). */
 export async function downloadForPreview(
   config: ConnectionConfig,
   path: string,
 ): Promise<SavedLocalFile> {
   const file = await downloadFile(config, path);
-  const binary = atob(file.base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const bytes = base64ToBytes(file.base64);
   const blob = new Blob([bytes], { type: file.mime });
   const objectUrl = URL.createObjectURL(blob);
   return {

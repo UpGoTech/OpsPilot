@@ -3,6 +3,8 @@
  * Attributes may include file / height (height ignored for remote card fallback).
  */
 
+import { isPlaceholderArtifactPath } from "./artifactPlaceholders";
+
 export interface PreviewDirective {
   file: string;
   raw: string;
@@ -28,7 +30,11 @@ export function extractPreviewDirectives(source: string): {
   const re = new RegExp(PREVIEW_RE.source, "gi");
   while ((match = re.exec(source || "")) !== null) {
     const file = attr(match[1] || "", "file");
-    if (!file) continue;
+    if (!file || isPlaceholderArtifactPath(file)) {
+      // Still strip placeholder directives from visible prose.
+      remainder = remainder.replace(match[0], "");
+      continue;
+    }
     directives.push({
       file,
       raw: match[0],

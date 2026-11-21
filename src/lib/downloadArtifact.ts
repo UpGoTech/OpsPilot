@@ -1,13 +1,10 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
-import { save } from "@tauri-apps/plugin-dialog";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   fsDownload,
   fsDownloadForPreview,
   fsDownloadToDownloads,
   fsDownloadToPath,
   type DownloadedFile,
-} from "./tauri";
+} from "./native";
 import type { ConnectionConfig } from "../types";
 
 function base64ToUint8Array(b64: string): Uint8Array {
@@ -17,17 +14,12 @@ function base64ToUint8Array(b64: string): Uint8Array {
   return out;
 }
 
-/** Fetch a remote workspace file and write it into this Mac's Downloads folder. */
+/** Fetch a remote workspace file into the browser Downloads folder. */
 export async function downloadGatewayArtifact(
   config: ConnectionConfig,
   path: string,
 ): Promise<{ filename: string; byteLength: number; localPath: string }> {
   const saved = await fsDownloadToDownloads(config, path);
-  try {
-    await revealItemInDir(saved.localPath);
-  } catch {
-    // Reveal is best-effort; the file is already on disk.
-  }
   return {
     filename: saved.filename,
     byteLength: saved.byteLength,
@@ -36,8 +28,8 @@ export async function downloadGatewayArtifact(
 }
 
 /**
- * Save As: system dialog, then write gateway bytes to the chosen path.
- * Returns null if the user cancels.
+ * Save As via Chromium downloads API (`saveAs: true`).
+ * Returns null only if the underlying download layer cancels (rare).
  */
 export async function saveGatewayArtifactAs(
   config: ConnectionConfig,
@@ -45,34 +37,7 @@ export async function saveGatewayArtifactAs(
 ): Promise<{ filename: string; byteLength: number; localPath: string } | null> {
   const filename =
     path.split(/[/\\]/).pop()?.replace(/[^\w.\-]+/g, "_") || "download";
-  const lower = filename.toLowerCase();
-  const ext = lower.includes(".") ? lower.slice(lower.lastIndexOf(".") + 1) : "";
-  const named: Record<string, string> = {
-    pdf: "PDF",
-    zip: "ZIP archive",
-    rar: "RAR archive",
-    "7z": "7z archive",
-    xls: "Excel",
-    xlsx: "Excel",
-    xlsm: "Excel",
-    csv: "CSV",
-    doc: "Word",
-    docx: "Word",
-  };
-  const filters = ext
-    ? [
-        { name: named[ext] || ext.toUpperCase(), extensions: [ext] },
-        { name: "All files", extensions: ["*"] },
-      ]
-    : [{ name: "All files", extensions: ["*"] }];
-
-  const dest = await save({
-    defaultPath: filename,
-    filters,
-  });
-  if (!dest) return null;
-
-  const saved = await fsDownloadToPath(config, path, dest);
+  const saved = await fsDownloadToPath(config, path, filename);
   return {
     filename: saved.filename,
     byteLength: saved.byteLength,
@@ -80,7 +45,7 @@ export async function saveGatewayArtifactAs(
   };
 }
 
-/** Fetch bytes for in-app preview (blob URL) — fine for HTML, not PDFs in WKWebView. */
+/** Fetch bytes for in-app / new-tab preview. */
 export async function fetchGatewayArtifactBlob(
   config: ConnectionConfig,
   path: string,
@@ -100,8 +65,7 @@ export async function fetchGatewayArtifactBlob(
 }
 
 /**
- * Download to a temp file and return an asset:// URL WKWebView can render
- * (needed for PDF preview).
+ * Download for preview — extension returns a blob: URL already.
  */
 export async function fetchGatewayArtifactPreviewUrl(
   config: ConnectionConfig,
@@ -109,7 +73,7 @@ export async function fetchGatewayArtifactPreviewUrl(
 ): Promise<{ url: string; filename: string; localPath: string }> {
   const saved = await fsDownloadForPreview(config, path);
   return {
-    url: convertFileSrc(saved.localPath),
+    url: saved.localPath,
     filename: saved.filename,
     localPath: saved.localPath,
   };

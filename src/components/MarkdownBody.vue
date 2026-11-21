@@ -19,6 +19,8 @@ import {
   filenameOfPath,
   type PreviewDirective,
 } from "../lib/previewDirectives";
+import { linkifyMarkdown } from "../lib/linkifyMarkdown";
+import { stripTunnelUrls } from "../lib/opspilotPolicy";
 import { scrubServerPaths } from "../lib/scrubServerPaths";
 import { useGatewayStore } from "../stores/gateway";
 import { useLayoutStore } from "../stores/layout";
@@ -82,7 +84,10 @@ const previews = computed(() =>
 const withoutPreview = computed(() => previewParsed.value.remainder);
 
 const extractedHtml = computed(() => extractHtmlDocument(withoutPreview.value));
-const pdfs = computed(() => extractPdfArtifacts(withoutPreview.value));
+/** Mine tool logs too — agents often only put the .pdf path in a shell command. */
+const pdfs = computed(() =>
+  extractPdfArtifacts(withoutPreview.value, props.artifactSources),
+);
 const files = computed(() =>
   extractFileArtifacts(withoutPreview.value, props.artifactSources),
 );
@@ -99,6 +104,11 @@ const filteredFiles = computed(() =>
   files.value.filter((f) => !previewPaths.value.has(f.path)),
 );
 
+const tunnelNotice = computed(() => {
+  const scrubbed = stripTunnelUrls(withoutPreview.value || "");
+  return scrubbed.hadTunnel;
+});
+
 const displaySource = computed(() => {
   let raw = withoutPreview.value || "";
   const htmlDoc = extractedHtml.value;
@@ -107,6 +117,7 @@ const displaySource = computed(() => {
   raw = scrubServerPaths(raw, "remove");
   raw = stripPdfPathNoise(raw, pdfs.value);
   raw = stripFilePathNoise(raw, files.value);
+  raw = stripTunnelUrls(raw).text;
   // Common agent footers that only make sense next to a live Desktop iframe.
   raw = raw.replace(
     /(?:^|\n)\s*File at\s*\([^)]*\)\.?\s*/gi,
@@ -131,7 +142,8 @@ const html = computed(() => {
     return "";
   }
   try {
-    return marked.parse(raw, { async: false }) as string;
+    const linked = linkifyMarkdown(raw);
+    return marked.parse(linked, { async: false }) as string;
   } catch {
     return raw
       .replace(/&/g, "&amp;")
@@ -168,6 +180,29 @@ async function downloadExtractedHtml() {
   const blob = new Blob([doc.html], { type: "text/html;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   try {
+    const chromeDownloads = (
+      globalThis as {
+        chrome?: {
+          runtime?: { id?: string };
+          downloads?: {
+            download: (opts: {
+              url: string;
+              filename: string;
+              saveAs: boolean;
+            }) => Promise<number>;
+          };
+        };
+      }
+    ).chrome;
+    if (chromeDownloads?.runtime?.id && chromeDownloads.downloads?.download) {
+      await chromeDownloads.downloads.download({
+        url,
+        filename,
+        saveAs: true,
+      });
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      return;
+    }
     const a = document.createElement("a");
     a.href = url;
     a.download = filename;
@@ -176,7 +211,13 @@ async function downloadExtractedHtml() {
     a.click();
     a.remove();
   } finally {
-    URL.revokeObjectURL(url);
+    // Anchor path revokes immediately; chrome.downloads keeps the blob longer above.
+    if (
+      !(globalThis as { chrome?: { runtime?: { id?: string } } }).chrome?.runtime
+        ?.id
+    ) {
+      URL.revokeObjectURL(url);
+    }
   }
 }
 
@@ -227,6 +268,13 @@ async function onClick(event: MouseEvent) {
       v-html="html"
       @click="onClick"
     />
+
+    <p
+      v-if="tunnelNotice"
+      class="my-2 text-[12px] leading-snug text-[#6b6b6b]"
+    >
+      OpsPilot opens workspace files locally — ignore public tunnels.
+    </p>
 
     <!-- Desktop ::preview{file="…"} — inline HTML when readable, else file card -->
     <template v-for="p in previews" :key="`preview-${p.path}`">
@@ -310,11 +358,14 @@ async function onClick(event: MouseEvent) {
       :artifact="pdf"
     />
 
-    <FileArtifactCard
-      v-for="file in filteredFiles"
-      :key="file.path"
-      :artifact="file"
-    />
+    <!-- HTML on disk → same Preview/Download card as zip/xlsx (path mined from prose + tools). -->
+    <template v-for="file in filteredFiles" :key="file.path">
+      <InlineHtmlPreview
+        v-if="file.ext === 'html' || file.ext === 'htm'"
+        :path="file.path"
+      />
+      <FileArtifactCard v-else :artifact="file" />
+    </template>
 
     <div v-if="linkStatus" class="mt-1 px-1 text-[11px] text-[#6b6b6b]">
       {{ linkStatus }}

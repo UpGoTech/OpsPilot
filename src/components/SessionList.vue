@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { Dropdown } from "frappe-ui";
-import { fsDefaultCwd } from "../lib/tauri";
+import { fsDefaultCwd } from "../lib/native";
 import {
   buildSessionSections,
   formatRelativeTime,
@@ -121,8 +121,13 @@ async function createSession() {
 }
 
 async function selectSession(session: SessionSummary) {
-  await tabs.activateTab(session.id);
-  emit("select", session);
+  try {
+    await tabs.activateTab(session.id);
+    emit("select", session);
+  } catch (err) {
+    actionError.value =
+      err instanceof Error ? err.message : `Open failed: ${String(err)}`;
+  }
 }
 </script>
 

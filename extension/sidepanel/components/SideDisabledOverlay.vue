@@ -11,6 +11,7 @@ const emit = defineEmits<{
   openSite: [];
   changeSite: [];
   signIn: [];
+  retry: [];
 }>();
 
 const WRONG_TAB_QUOTES = [
@@ -67,6 +68,8 @@ const quote = computed(() => {
 
 const kicker = computed(() => {
   switch (props.gate.status) {
+    case "checking":
+      return "Checking";
     case "not_logged_in":
       return "Not signed in";
     case "opspilot_unavailable":
@@ -80,6 +83,8 @@ const kicker = computed(() => {
 
 const headline = computed(() => {
   switch (props.gate.status) {
+    case "checking":
+      return "Looking for your signed-in Desk tab…";
     case "not_logged_in":
       return "You're on the right site, but Desk isn't signed in.";
     case "opspilot_unavailable":
@@ -94,8 +99,11 @@ const headline = computed(() => {
 });
 
 const hint = computed(() => {
+  if (props.gate.detail?.trim()) return props.gate.detail.trim();
   const host = props.siteHost || "your OpsPilot site";
   switch (props.gate.status) {
+    case "checking":
+      return `Probing ${host}. If this hangs, refresh the Desk tab and click Retry.`;
     case "not_logged_in":
       return `Sign in on the Desk tab for ${host} — OpsPilot uses that session.`;
     case "opspilot_unavailable":
@@ -230,14 +238,29 @@ function nextQuote() {
         type="button"
         class="side-disabled-cta"
         @click="
-          gate.status === 'not_logged_in' ? emit('signIn') : emit('openSite')
+          gate.status === 'checking'
+            ? emit('retry')
+            : gate.status === 'not_logged_in'
+              ? emit('signIn')
+              : emit('openSite')
         "
       >
         {{
-          gate.status === "not_logged_in"
-            ? "Open Desk to sign in"
-            : "Open OpsPilot site"
+          gate.status === "checking"
+            ? "Retry"
+            : gate.status === "not_logged_in"
+              ? "Open Desk to sign in"
+              : "Open OpsPilot site"
         }}
+      </button>
+
+      <button
+        v-if="gate.status !== 'checking'"
+        type="button"
+        class="side-disabled-link"
+        @click="emit('retry')"
+      >
+        Retry check
       </button>
 
       <button
@@ -245,7 +268,7 @@ function nextQuote() {
         class="side-disabled-link"
         @click="emit('changeSite')"
       >
-        Change OpsPilot site URL
+        Site details
       </button>
     </div>
   </div>

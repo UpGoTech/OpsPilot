@@ -30,7 +30,7 @@ async function onDownload() {
       status.value = null;
       return;
     }
-    status.value = `Saved to ${saved.localPath}`;
+    status.value = `Saved · ${saved.filename}`;
   } catch (err) {
     status.value =
       err instanceof Error ? err.message : `Download failed: ${String(err)}`;
@@ -49,7 +49,7 @@ async function onPreview() {
       props.artifact.path,
     );
     layout.openPdfPreview(url, filename);
-    status.value = "Opened in browser";
+    status.value = "Opened in new tab";
   } catch (err) {
     status.value =
       err instanceof Error ? err.message : `Preview failed: ${String(err)}`;

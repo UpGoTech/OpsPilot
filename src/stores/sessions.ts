@@ -70,9 +70,14 @@ function isSessionNotFound(err: unknown): boolean {
 
 const PINNED_KEY = "opspilot.pinnedSessions";
 
-function loadPinnedIds(): string[] {
+function pinnedStorageKey(siteKey?: string | null): string {
+  const key = siteKey?.trim().toLowerCase();
+  return key ? `${PINNED_KEY}.${key}` : PINNED_KEY;
+}
+
+function loadPinnedIds(siteKey?: string | null): string[] {
   try {
-    const raw = localStorage.getItem(PINNED_KEY);
+    const raw = localStorage.getItem(pinnedStorageKey(siteKey));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed.map(String) : [];
@@ -81,9 +86,9 @@ function loadPinnedIds(): string[] {
   }
 }
 
-function savePinnedIds(ids: string[]) {
+function savePinnedIds(ids: string[], siteKey?: string | null) {
   try {
-    localStorage.setItem(PINNED_KEY, JSON.stringify(ids));
+    localStorage.setItem(pinnedStorageKey(siteKey), JSON.stringify(ids));
   } catch {
     // ignore quota
   }
@@ -99,6 +104,17 @@ export const useSessionsStore = defineStore("sessions", () => {
   const pinnedIds = ref<string[]>(loadPinnedIds());
   const loading = ref(false);
   const error = ref<string | null>(null);
+  let pinnedSiteKey: string | null = null;
+
+  function bindSite(siteKey: string | null) {
+    pinnedSiteKey = siteKey?.trim().toLowerCase() || null;
+    pinnedIds.value = loadPinnedIds(pinnedSiteKey);
+    sessions.value = [];
+    activeId.value = null;
+    liveId.value = null;
+    loading.value = false;
+    error.value = null;
+  }
 
   function syncPinsFromBackend(rows: SessionSummary[]) {
     const next = new Set(pinnedIds.value);
@@ -106,7 +122,7 @@ export const useSessionsStore = defineStore("sessions", () => {
       if (row.pinned) next.add(row.id);
     }
     pinnedIds.value = [...next];
-    savePinnedIds(pinnedIds.value);
+    savePinnedIds(pinnedIds.value, pinnedSiteKey);
   }
 
   async function refresh() {
@@ -130,6 +146,13 @@ export const useSessionsStore = defineStore("sessions", () => {
       }
       sessions.value = asSessions(result);
       syncPinsFromBackend(sessions.value);
+      // Session deleted in another Hermes client — drop ghost active id.
+      if (
+        activeId.value &&
+        !sessions.value.some((s) => s.id === activeId.value)
+      ) {
+        dropSessionLocally(activeId.value);
+      }
     } catch (err) {
       error.value = err instanceof Error ? err.message : String(err);
     } finally {
@@ -143,7 +166,7 @@ export const useSessionsStore = defineStore("sessions", () => {
       ? pinnedIds.value.filter((id) => id !== sessionId)
       : [sessionId, ...pinnedIds.value.filter((id) => id !== sessionId)];
     pinnedIds.value = next;
-    savePinnedIds(next);
+    savePinnedIds(next, pinnedSiteKey);
 
     // Best-effort durable pin on the gateway (Desktop syncs the same flag).
     const gateway = useGatewayStore();
@@ -199,6 +222,14 @@ export const useSessionsStore = defineStore("sessions", () => {
         }
       }
     }
+    dropSessionLocally(sessionId);
+  }
+
+  /**
+   * Drop a session from local caches without talking to the gateway.
+   * Used when the gateway says the durable id is gone (external delete / 4001).
+   */
+  function dropSessionLocally(sessionId: string) {
     sessions.value = sessions.value.filter((s) => s.id !== sessionId);
     pinnedIds.value = pinnedIds.value.filter((id) => id !== sessionId);
     savePinnedIds(pinnedIds.value);
@@ -266,6 +297,13 @@ export const useSessionsStore = defineStore("sessions", () => {
     if (allowed?.has("request_id")) {
       params.request_id = crypto.randomUUID();
     }
+    // Seed client policy when the gateway accepts session.create messages.
+    if (!allowed || allowed.has("messages")) {
+      const { OPSPILOT_FILE_POLICY } = await import("../lib/opspilotPolicy");
+      params.messages = [
+        { role: "system", content: OPSPILOT_FILE_POLICY },
+      ];
+    }
 
     let result: Record<string, unknown>;
     try {
@@ -321,6 +359,12 @@ export const useSessionsStore = defineStore("sessions", () => {
     } catch {
       bindActive(session.id, session.liveId ?? session.id);
     }
+    if (params.messages) {
+      const { markPolicySeeded } = await import("../lib/opspilotPolicy");
+      const live = liveId.value || session.liveId || session.id;
+      markPolicySeeded(live);
+      markPolicySeeded(session.id);
+    }
     return sessions.value.find((s) => s.id === session.id) ?? session;
   }
 
@@ -342,11 +386,18 @@ export const useSessionsStore = defineStore("sessions", () => {
       return await run(first);
     } catch (err) {
       if (!stored || !isSessionNotFound(err)) throw err;
-      const snapshot = await resume(stored);
-      const next =
-        pickString(snapshot.session_id, snapshot.stored_session_id) || stored;
-      bindActive(stored, next);
-      return await run(next);
+      try {
+        const snapshot = await resume(stored);
+        const next =
+          pickString(snapshot.session_id, snapshot.stored_session_id) || stored;
+        bindActive(stored, next);
+        return await run(next);
+      } catch (resumeErr) {
+        if (isSessionNotFound(resumeErr)) {
+          dropSessionLocally(stored);
+        }
+        throw resumeErr;
+      }
     }
   }
 
@@ -368,6 +419,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     pinnedIds,
     loading,
     error,
+    bindSite,
     refresh,
     create,
     resume,
@@ -375,6 +427,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     withLiveSession,
     bindActive,
     clearActive,
+    dropSessionLocally,
     upsertTitle,
     togglePin,
     isPinned,

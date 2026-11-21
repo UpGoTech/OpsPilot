@@ -180,7 +180,7 @@ defineExpose({
         v-model="draft"
         rows="1"
         spellcheck="false"
-        class="side-composer-input"
+        class="side-composer-input outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0"
         :placeholder="
           disabled
             ? 'Switch to your OpsPilot site to chat'

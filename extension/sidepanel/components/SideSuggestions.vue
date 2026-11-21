@@ -11,7 +11,7 @@ const emit = defineEmits<{
 }>();
 
 const suggestions = [
-  "Summarize this page",
+  "What can you help me with in OpsPilot?",
   "Create a project timeline",
   "Develop a marketing strategy",
   "Help me brainstorm",

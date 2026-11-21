@@ -15,9 +15,16 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "types": ["vite/client"]
+    "types": ["vite/client", "chrome"]
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue"],
-  "exclude": ["node_modules", "dist", "src-tauri"],
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.d.ts",
+    "src/**/*.tsx",
+    "src/**/*.vue",
+    "extension/**/*.ts",
+    "extension/**/*.vue"
+  ],
+  "exclude": ["node_modules", "dist", "extension/dist"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

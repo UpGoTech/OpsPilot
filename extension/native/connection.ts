@@ -1,6 +1,20 @@
 import type { AuthMode, ConnectionConfig } from "../../src/types";
 
 const CONNECTION_KEY = "opspilot.connection";
+const CONNECTIONS_KEY = "opspilot.connections";
+
+/** Active Desk site key (hostname) — connections are stored per site. */
+let activeConnectionSiteKey: string | null = null;
+
+export function setActiveConnectionSiteKey(siteKey: string | null): void {
+  activeConnectionSiteKey = siteKey?.trim()
+    ? siteKey.trim().toLowerCase()
+    : null;
+}
+
+export function getActiveConnectionSiteKey(): string | null {
+  return activeConnectionSiteKey;
+}
 
 const MANAGED_HEADERS = new Set([
   "authorization",
@@ -200,9 +214,72 @@ export function collectSetCookies(response: Response): string[] {
   return single ? [single] : [];
 }
 
-export async function loadConnection(): Promise<ConnectionConfig> {
-  const stored = await chrome.storage.local.get(CONNECTION_KEY);
-  const raw = stored[CONNECTION_KEY] as ConnectionConfig | undefined;
+/**
+ * MV3 pages cannot read Set-Cookie from fetch (forbidden header).
+ * With host_permissions, login with credentials:"include" stores cookies in the
+ * browser jar — pull Hermes session cookies from chrome.cookies instead.
+ */
+function isHermesSessionCookieName(name: string): boolean {
+  const bare = name.replace(/^__(?:Host|Secure)-/, "");
+  return (
+    bare === "hermes_session_at" ||
+    bare.startsWith("hermes_session_at_") ||
+    bare === "hermes_session_rt" ||
+    bare.startsWith("hermes_session_rt_")
+  );
+}
+
+export async function absorbHermesCookiesFromBrowser(
+  config: ConnectionConfig,
+  gatewayUrl: string,
+): Promise<void> {
+  if (!chrome.cookies?.getAll) return;
+  let url = gatewayUrl.trim();
+  if (!url) return;
+  if (!url.includes("://")) url = `https://${url}`;
+
+  let host = "";
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return;
+  }
+
+  const byUrl = await chrome.cookies.getAll({ url });
+  // Also scan by domain in case path/prefix differs from the normalized base.
+  const byDomain = await chrome.cookies.getAll({ domain: host });
+  const seen = new Map<string, string>();
+  for (const cookie of [...byUrl, ...byDomain]) {
+    const name = cookie.name?.trim();
+    if (!name || !isHermesSessionCookieName(name)) continue;
+    seen.set(name, cookie.value);
+  }
+
+  if (!config.cookies) config.cookies = {};
+  for (const [name, value] of seen) {
+    config.cookies[name] = value;
+  }
+}
+
+async function readConnectionMap(): Promise<Record<string, ConnectionConfig>> {
+  const stored = await chrome.storage.local.get([CONNECTIONS_KEY, CONNECTION_KEY]);
+  const map = (stored[CONNECTIONS_KEY] as Record<string, ConnectionConfig> | undefined) ?? {};
+  // Migrate legacy single connection into the active site slot once.
+  const legacy = stored[CONNECTION_KEY] as ConnectionConfig | undefined;
+  if (legacy?.url?.trim() && activeConnectionSiteKey && !map[activeConnectionSiteKey]) {
+    map[activeConnectionSiteKey] = { ...emptyConnection(), ...legacy, password: "" };
+    await chrome.storage.local.set({ [CONNECTIONS_KEY]: map });
+  }
+  return map;
+}
+
+export async function loadConnection(
+  siteKey?: string | null,
+): Promise<ConnectionConfig> {
+  const key = (siteKey ?? activeConnectionSiteKey ?? "").trim().toLowerCase();
+  if (!key) return emptyConnection();
+  const map = await readConnectionMap();
+  const raw = map[key];
   if (!raw) return emptyConnection();
   return {
     ...emptyConnection(),
@@ -213,12 +290,24 @@ export async function loadConnection(): Promise<ConnectionConfig> {
 
 export async function saveConnection(
   config: ConnectionConfig,
+  siteKey?: string | null,
 ): Promise<ConnectionConfig> {
+  const key = (siteKey ?? activeConnectionSiteKey ?? "").trim().toLowerCase();
   const cleaned: ConnectionConfig = {
     ...emptyConnection(),
     ...config,
     password: "",
   };
-  await chrome.storage.local.set({ [CONNECTION_KEY]: cleaned });
+  if (!key) {
+    // No site context — keep legacy key for backwards compatibility only.
+    await chrome.storage.local.set({ [CONNECTION_KEY]: cleaned });
+    return cleaned;
+  }
+  const map = await readConnectionMap();
+  map[key] = cleaned;
+  await chrome.storage.local.set({
+    [CONNECTIONS_KEY]: map,
+    [CONNECTION_KEY]: cleaned,
+  });
   return cleaned;
 }
