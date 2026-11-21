@@ -1,17 +1,74 @@
 import { defineStore } from "pinia";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { activityLabel, summarizeDetail } from "../lib/activityLabels";
 import { classifyAttachment, toDataUrl } from "../lib/attachments";
-import { fsDefaultCwd } from "../lib/tauri";
+import { withPolicyPreamble } from "../lib/opspilotPolicy";
+import { fsDefaultCwd } from "../lib/native";
 import { useGatewayStore } from "./gateway";
 import { useSessionsStore } from "./sessions";
 import type {
   AgentActivity,
+  ApprovalChoice,
+  ApprovalRequest,
+  ClarifyQuestion,
+  ClarifyRequest,
   PromptAttachment,
   ChatMessage,
   ChatTurn,
   GatewayEvent,
+  GatewayServerRequest,
+  SecretPromptKind,
+  SecretPromptRequest,
+  VaultSaveLoginRequest,
 } from "../types";
+
+const DEFAULT_APPROVAL_CHOICES: ApprovalChoice[] = [
+  "once",
+  "session",
+  "always",
+  "deny",
+];
+
+/** Desktop window-owned bridges — OpsPilot has no pane; answer empty value. */
+const SURFACE_REQUESTS = new Set([
+  "preview.act",
+  "preview.read",
+  "terminal.read",
+  "window.read",
+  "tour",
+]);
+
+function asApprovalChoices(raw: unknown): ApprovalChoice[] {
+  if (!Array.isArray(raw) || !raw.length) return [...DEFAULT_APPROVAL_CHOICES];
+  const allowed = new Set(DEFAULT_APPROVAL_CHOICES);
+  const out = raw
+    .map(String)
+    .filter((c): c is ApprovalChoice => allowed.has(c as ApprovalChoice));
+  return out.length ? out : [...DEFAULT_APPROVAL_CHOICES];
+}
+
+function normalizeClarifyQuestions(raw: unknown): ClarifyQuestion[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ClarifyQuestion[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const row = entry as Record<string, unknown>;
+    const qid = typeof row.qid === "string" ? row.qid.trim() : "";
+    const question =
+      typeof row.question === "string" ? row.question.trim() : "";
+    if (!qid || !question) continue;
+    const choices = Array.isArray(row.choices)
+      ? row.choices.map(String).map((c) => c.trim()).filter(Boolean)
+      : [];
+    out.push({
+      qid,
+      question,
+      choices: choices.length ? choices : null,
+      multiSelect: row.multi_select === true && choices.length > 0,
+    });
+  }
+  return out;
+}
 
 /** Route by extension/mime — never trust a stale composer `kind` (HMR / older chips). */
 function partitionAttachments(attachments: PromptAttachment[]) {
@@ -128,9 +185,48 @@ export const useChatStore = defineStore("chat", () => {
   const loadingHistory = ref(false);
   const sending = ref(false);
   const error = ref<string | null>(null);
+  /** Tool approvals waiting for Once / Session / Always / Deny. */
+  const pendingApprovals = ref<ApprovalRequest[]>([]);
+  const pendingClarify = ref<ClarifyRequest[]>([]);
+  const pendingSecrets = ref<SecretPromptRequest[]>([]);
+  const pendingVaultSaves = ref<VaultSaveLoginRequest[]>([]);
+  /** Live status.update text (compaction / fallback / goal). */
+  const statusLine = ref<string | null>(null);
+  /** Bumped to remount MarkdownBody (re-run artifact extractors). */
+  const renderEpoch = ref(0);
   let streamingId: string | null = null;
   let activeTurnId: string | null = null;
   let unsub: (() => void) | null = null;
+  let unsubServerRequest: (() => void) | null = null;
+  let unwatchGatewayState: (() => void) | null = null;
+
+  function markLiveWaiting() {
+    const turn = activeTurn();
+    if (turn) turn.running = true;
+    sending.value = true;
+  }
+
+  function clearAllPrompts() {
+    pendingApprovals.value = [];
+    pendingClarify.value = [];
+    pendingSecrets.value = [];
+    pendingVaultSaves.value = [];
+  }
+
+  function dropPromptById(requestId: string) {
+    pendingApprovals.value = pendingApprovals.value.filter(
+      (a) => a.requestId !== requestId && a.serverRequestId !== requestId,
+    );
+    pendingClarify.value = pendingClarify.value.filter(
+      (c) => c.serverRequestId !== requestId,
+    );
+    pendingSecrets.value = pendingSecrets.value.filter(
+      (s) => s.serverRequestId !== requestId,
+    );
+    pendingVaultSaves.value = pendingVaultSaves.value.filter(
+      (v) => v.serverRequestId !== requestId,
+    );
+  }
 
   const activity = computed(() => {
     const turn = turns.value.find((t) => t.id === activeTurnId);
@@ -162,6 +258,333 @@ export const useChatStore = defineStore("chat", () => {
     if (unsub) return;
     const gateway = useGatewayStore();
     unsub = gateway.onEvent(handleEvent);
+    unsubServerRequest = gateway.onServerRequest(handleServerRequest);
+    // WS drop mid-turn must unlock the composer; reconnect alone does not.
+    if (!unwatchGatewayState) {
+      unwatchGatewayState = watch(
+        () => gateway.state,
+        (next) => {
+          if (next === "closed" || next === "error") {
+            sending.value = false;
+            statusLine.value = null;
+            finishTurnActivity("done");
+          }
+        },
+      );
+    }
+  }
+
+  function handleServerRequest(req: GatewayServerRequest) {
+    const gateway = useGatewayStore();
+    const sessions = useSessionsStore();
+    const params = (req.params ?? {}) as Record<string, unknown>;
+    const sessionId = String(
+      params.session_id ?? sessions.liveId ?? sessions.activeId ?? "",
+    );
+
+    // Desktop window-owned bridges — no pane here; empty value = unavailable.
+    if (SURFACE_REQUESTS.has(req.method)) {
+      void gateway
+        .respondServerRequest(req.id, { value: "" })
+        .catch(() => undefined);
+      return;
+    }
+
+    if (req.method === "approval") {
+      const requestId = String(params.request_id ?? req.id);
+      const next: ApprovalRequest = {
+        serverRequestId: req.id,
+        requestId,
+        sessionId,
+        command: String(params.command ?? ""),
+        description: String(
+          params.description ??
+            params.tool_name ??
+            "This command needs approval",
+        ),
+        choices: asApprovalChoices(params.choices),
+        toolName:
+          typeof params.tool_name === "string" ? params.tool_name : undefined,
+      };
+      pendingApprovals.value = [
+        ...pendingApprovals.value.filter(
+          (a) =>
+            a.serverRequestId !== next.serverRequestId &&
+            a.requestId !== next.requestId,
+        ),
+        next,
+      ];
+      markLiveWaiting();
+      void gateway
+        .rpc("approval.received", {
+          session_id: sessionId || undefined,
+          request_id: requestId,
+        })
+        .catch(() => undefined);
+      return;
+    }
+
+    if (req.method === "clarify" || req.method === "setup_choose") {
+      let questions = normalizeClarifyQuestions(params.questions);
+      let setupKind: string | undefined;
+      if (req.method === "setup_choose") {
+        setupKind =
+          typeof params.kind === "string" ? params.kind : undefined;
+        const question =
+          typeof params.question === "string" ? params.question.trim() : "";
+        if (question && !questions.length) {
+          const options = Array.isArray(params.options)
+            ? params.options
+                .map((o) => {
+                  if (o && typeof o === "object" && "label" in o) {
+                    return String((o as { label: unknown }).label);
+                  }
+                  return String(o);
+                })
+                .filter(Boolean)
+            : [];
+          questions = [
+            {
+              qid: "setup_choose",
+              question,
+              choices: options.length ? options : null,
+              multiSelect: params.multi_select === true && options.length > 0,
+            },
+          ];
+        }
+      }
+      if (!questions.length) {
+        void gateway.respondServerRequest(req.id, {}).catch(() => undefined);
+        return;
+      }
+      const next: ClarifyRequest = {
+        serverRequestId: req.id,
+        sessionId,
+        questions,
+        setupKind,
+      };
+      pendingClarify.value = [
+        ...pendingClarify.value.filter(
+          (c) => c.serverRequestId !== next.serverRequestId,
+        ),
+        next,
+      ];
+      markLiveWaiting();
+      return;
+    }
+
+    if (
+      req.method === "sudo" ||
+      req.method === "display.install.sudo" ||
+      req.method === "secret" ||
+      req.method === "vault.unlock_prompt" ||
+      req.method === "vault.code"
+    ) {
+      let kind: SecretPromptKind = "secret";
+      let title = "Secret needed";
+      let description = String(params.prompt ?? params.description ?? "");
+      let hint: string | undefined;
+      let command: string | undefined;
+
+      if (req.method === "sudo" || req.method === "display.install.sudo") {
+        kind = "sudo";
+        title = "Password needed";
+        description =
+          description ||
+          (req.method === "display.install.sudo"
+            ? "Enter your password to continue the install."
+            : "Enter your password to run this command.");
+        command = String(params.command ?? "") || undefined;
+      } else if (req.method === "vault.unlock_prompt") {
+        kind = "vault_unlock";
+        const display =
+          String(params.display_name ?? params.backend ?? "Password manager");
+        title = `Unlock ${display}`;
+        description = description || `Enter the master password for ${display}.`;
+      } else if (req.method === "vault.code") {
+        kind = "vault_code";
+        const site = String(params.site ?? "site");
+        title = `Code for ${site}`;
+        description =
+          description ||
+          String(params.hint ?? "Enter the one-time code from the site.");
+        hint = String(params.hint ?? "") || undefined;
+      } else {
+        const envVar = String(params.env_var ?? "");
+        title = envVar || "Secret needed";
+        description = description || `Paste a value for ${envVar || "this secret"}.`;
+        hint = envVar || undefined;
+      }
+
+      const next: SecretPromptRequest = {
+        serverRequestId: req.id,
+        sessionId,
+        kind,
+        title,
+        description,
+        command,
+        hint,
+      };
+      pendingSecrets.value = [
+        ...pendingSecrets.value.filter(
+          (s) => s.serverRequestId !== next.serverRequestId,
+        ),
+        next,
+      ];
+      markLiveWaiting();
+      return;
+    }
+
+    if (req.method === "vault.save_login") {
+      const origin = String(params.origin ?? "");
+      const site = String(params.site ?? origin) || "site";
+      const next: VaultSaveLoginRequest = {
+        serverRequestId: req.id,
+        sessionId,
+        site,
+        origin,
+      };
+      pendingVaultSaves.value = [
+        ...pendingVaultSaves.value.filter(
+          (v) => v.serverRequestId !== next.serverRequestId,
+        ),
+        next,
+      ];
+      markLiveWaiting();
+      return;
+    }
+
+    // Never drop — unblocks the Python side instead of stalling the turn.
+    void gateway
+      .failServerRequest(req.id, -32601, `Method not found: ${req.method}`)
+      .catch(() => undefined);
+  }
+
+  async function answerApproval(requestId: string, choice: ApprovalChoice) {
+    const gateway = useGatewayStore();
+    const hit =
+      pendingApprovals.value.find(
+        (a) => a.requestId === requestId || a.serverRequestId === requestId,
+      ) ?? null;
+    if (!hit) return;
+
+    pendingApprovals.value = pendingApprovals.value.filter(
+      (a) => a.serverRequestId !== hit.serverRequestId,
+    );
+
+    try {
+      await gateway.respondServerRequest(hit.serverRequestId, { choice });
+    } catch {
+      // Fallback when the live response frame path fails.
+      try {
+        await gateway.rpc("approval.respond", {
+          session_id: hit.sessionId || undefined,
+          request_id: hit.requestId,
+          choice,
+        });
+      } catch (err) {
+        error.value =
+          err instanceof Error ? err.message : "Could not send approval";
+        // Put it back so the user can retry.
+        pendingApprovals.value = [...pendingApprovals.value, hit];
+      }
+    }
+  }
+
+  function clearApproval(requestId: string) {
+    dropPromptById(requestId);
+  }
+
+  async function answerClarify(
+    serverRequestId: string,
+    answers: Record<string, string | null>,
+  ) {
+    const gateway = useGatewayStore();
+    const hit =
+      pendingClarify.value.find((c) => c.serverRequestId === serverRequestId) ??
+      null;
+    if (!hit) return;
+
+    pendingClarify.value = pendingClarify.value.filter(
+      (c) => c.serverRequestId !== serverRequestId,
+    );
+
+    try {
+      // Desktop: sequential clarify.lock per question; last lock resolves the SRQ.
+      for (const question of hit.questions) {
+        const answer = answers[question.qid] ?? null;
+        await gateway.rpc("clarify.lock", {
+          answer,
+          question_id: question.qid,
+          request_id: hit.serverRequestId,
+        });
+      }
+    } catch {
+      // Fallback: respond on the server request frame directly.
+      try {
+        await gateway.respondServerRequest(hit.serverRequestId, { answers });
+      } catch (err) {
+        error.value =
+          err instanceof Error ? err.message : "Could not send answer";
+        pendingClarify.value = [...pendingClarify.value, hit];
+      }
+    }
+  }
+
+  async function skipClarify(serverRequestId: string) {
+    const gateway = useGatewayStore();
+    const hit =
+      pendingClarify.value.find((c) => c.serverRequestId === serverRequestId) ??
+      null;
+    if (!hit) return;
+    pendingClarify.value = pendingClarify.value.filter(
+      (c) => c.serverRequestId !== serverRequestId,
+    );
+    try {
+      await gateway.respondServerRequest(hit.serverRequestId, {});
+    } catch {
+      // ignore
+    }
+  }
+
+  async function answerSecret(serverRequestId: string, value: string) {
+    const gateway = useGatewayStore();
+    const hit =
+      pendingSecrets.value.find((s) => s.serverRequestId === serverRequestId) ??
+      null;
+    if (!hit) return;
+    pendingSecrets.value = pendingSecrets.value.filter(
+      (s) => s.serverRequestId !== serverRequestId,
+    );
+    try {
+      await gateway.respondServerRequest(hit.serverRequestId, { value });
+    } catch (err) {
+      error.value =
+        err instanceof Error ? err.message : "Could not send value";
+      pendingSecrets.value = [...pendingSecrets.value, hit];
+    }
+  }
+
+  async function answerVaultSave(
+    serverRequestId: string,
+    value: string,
+  ) {
+    const gateway = useGatewayStore();
+    const hit =
+      pendingVaultSaves.value.find(
+        (v) => v.serverRequestId === serverRequestId,
+      ) ?? null;
+    if (!hit) return;
+    pendingVaultSaves.value = pendingVaultSaves.value.filter(
+      (v) => v.serverRequestId !== serverRequestId,
+    );
+    try {
+      await gateway.respondServerRequest(hit.serverRequestId, { value });
+    } catch (err) {
+      error.value =
+        err instanceof Error ? err.message : "Could not save login";
+      pendingVaultSaves.value = [...pendingVaultSaves.value, hit];
+    }
   }
 
   function activeTurn(): ChatTurn | null {
@@ -437,6 +860,39 @@ export const useChatStore = defineStore("chat", () => {
         finishTurnActivity("error");
         break;
       }
+      case "request.cancel": {
+        const cancelId = String(payload.id ?? payload.request_id ?? "");
+        if (cancelId) dropPromptById(cancelId);
+        break;
+      }
+      case "approval.cancelled": {
+        pendingApprovals.value = [];
+        break;
+      }
+      case "status.update": {
+        const kind = String(payload.kind ?? "");
+        const text = String(payload.text ?? "").trim();
+        if (kind === "compacting" || kind === "compressing") {
+          statusLine.value = text || "Compressing conversation…";
+        } else if (kind === "compacted" || kind === "ready") {
+          statusLine.value = text || null;
+          if (kind === "ready" && !text) statusLine.value = null;
+        } else if (text) {
+          statusLine.value = text;
+        }
+        break;
+      }
+      case "session.title": {
+        const sessions = useSessionsStore();
+        const storedId = String(
+          payload.session_id ?? event.session_id ?? "",
+        );
+        const nextTitle = String(payload.title ?? "").trim();
+        if (storedId && nextTitle) {
+          sessions.upsertTitle(storedId, nextTitle);
+        }
+        break;
+      }
       default:
         break;
     }
@@ -468,14 +924,8 @@ export const useChatStore = defineStore("chat", () => {
     streamingId = null;
     activeTurnId = null;
     sending.value = false;
-
-    // HTML previews are tied to a live reply — don't carry/reopen them across history picks.
-    try {
-      const { useCenterTabsStore } = await import("./centerTabs");
-      await useCenterTabsStore().clearHtmlTabs();
-    } catch {
-      // ignore
-    }
+    statusLine.value = null;
+    clearAllPrompts();
 
     try {
       const snapshot = await sessions.resume(storedSessionId);
@@ -497,10 +947,43 @@ export const useChatStore = defineStore("chat", () => {
       }
     } catch (err) {
       error.value = err instanceof Error ? err.message : String(err);
-      sessions.bindActive(storedSessionId, null);
+      // Never bind a dead durable id — that leaves New/Send stuck on ghosts.
+      if (sessions.isSessionNotFound(err)) {
+        sessions.dropSessionLocally(storedSessionId);
+      } else if (sessions.activeId === storedSessionId) {
+        sessions.clearActive();
+      }
+      throw err;
     } finally {
       loadingHistory.value = false;
+      renderEpoch.value += 1;
     }
+  }
+
+  /** Reload history + remount extractors (after client updates that affect cards). */
+  async function reprocessTranscript() {
+    const sessions = useSessionsStore();
+    const id = sessions.activeId;
+    if (!id) {
+      renderEpoch.value += 1;
+      return;
+    }
+    try {
+      await openSession(id);
+    } catch {
+      // openSession sets chat.error / drops ghost ids; don't reject the Refresh click.
+    }
+  }
+
+  /** Local /clear — wipe transcript like Hermes WebUI, keep the same session. */
+  async function clearTranscriptLocally() {
+    turns.value = [];
+    sending.value = false;
+    streamingId = null;
+    activeTurnId = null;
+    error.value = null;
+    statusLine.value = null;
+    clearAllPrompts();
   }
 
   async function send(
@@ -525,6 +1008,38 @@ export const useChatStore = defineStore("chat", () => {
     if (!submitText) return;
     if (!gateway.isConnected) {
       throw new Error("Gateway not connected");
+    }
+
+    // Local slash commands (Desktop parity) — don't echo into the transcript.
+    if (/^\/clear(?:\s|$)/i.test(trimmed) && !hasAttachments) {
+      await clearTranscriptLocally();
+      if (!sessions.activeId) {
+        const cwd = await resolveDefaultCwd();
+        await sessions.create(cwd);
+      }
+      try {
+        await sessions.withLiveSession(async (sessionId) => {
+          await gateway.rpc("prompt.submit", {
+            session_id: sessionId,
+            text: "/clear",
+          });
+        });
+      } catch {
+        // Local clear already applied; gateway may still reject unknown slash.
+      }
+      return;
+    }
+
+    if (/^\/new(?:\s|$)/i.test(trimmed) && !hasAttachments) {
+      const cwd = await resolveDefaultCwd();
+      await sessions.create(cwd);
+      await clearTranscriptLocally();
+      return;
+    }
+
+    if (/^\/stop(?:\s|$)/i.test(trimmed) && !hasAttachments) {
+      await interrupt();
+      return;
     }
 
     if (!sessions.activeId) {
@@ -596,6 +1111,8 @@ export const useChatStore = defineStore("chat", () => {
         if (fileRefs.length) {
           finalText = `${submitText}\n\n${fileRefs.join("\n")}`;
         }
+        // Wire-only OpsPilot policy (no tunnels); user bubble stays clean.
+        finalText = withPolicyPreamble(sessionId, finalText);
 
         try {
           await gateway.rpc("prompt.submit", {
@@ -646,6 +1163,8 @@ export const useChatStore = defineStore("chat", () => {
     streamingId = null;
     activeTurnId = null;
     error.value = null;
+    statusLine.value = null;
+    clearAllPrompts();
     sessions.clearActive();
   }
 
@@ -659,10 +1178,23 @@ export const useChatStore = defineStore("chat", () => {
     loadingHistory,
     sending,
     error,
+    statusLine,
+    renderEpoch,
+    pendingApprovals,
+    pendingClarify,
+    pendingSecrets,
+    pendingVaultSaves,
     openSession,
+    reprocessTranscript,
     send,
     interrupt,
     reset,
     ensureListener,
+    answerApproval,
+    clearApproval,
+    answerClarify,
+    skipClarify,
+    answerSecret,
+    answerVaultSave,
   };
 });

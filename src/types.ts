@@ -3,9 +3,10 @@ export type GatewayState = "idle" | "connecting" | "open" | "closed" | "error";
 /** Desktop remote auth choice: session token paste vs sign-in. */
 export type AuthMode = "auto" | "token" | "password";
 
-/** Persisted locally — ERPNext site URL only. */
+/** Persisted locally — ERPNext site URL + last username (never password). */
 export interface ErpnextConfig {
   siteUrl: string;
+  lastUsername?: string;
 }
 
 /** In-memory ERPNext session info (sid never leaves Rust). */
@@ -55,6 +56,8 @@ export interface AuthProbe {
 export interface GatewayStateEvent {
   state: GatewayState;
   detail?: string | null;
+  /** Multi-site: hostname key this socket belongs to. */
+  siteKey?: string | null;
 }
 
 /** Matches Hermes Desktop GatewayEvent (params of method:"event"). */
@@ -63,6 +66,74 @@ export interface GatewayEvent {
   session_id?: string | null;
   payload?: Record<string, unknown> | null;
   seq?: number | null;
+  /** Multi-site: hostname key this event belongs to. */
+  siteKey?: string | null;
+}
+
+/** Server→client JSON-RPC request (Desktop `srq-…` frames). */
+export interface GatewayServerRequest {
+  id: string;
+  method: string;
+  params?: Record<string, unknown> | null;
+  /** Multi-site: hostname key this request belongs to. */
+  siteKey?: string | null;
+}
+
+export type ApprovalChoice = "once" | "session" | "always" | "deny";
+
+/** Pending tool approval waiting for Once / Session / Always / Deny. */
+export interface ApprovalRequest {
+  serverRequestId: string;
+  requestId: string;
+  sessionId: string;
+  command: string;
+  description: string;
+  choices: ApprovalChoice[];
+  toolName?: string;
+}
+
+/** One question inside a clarify / setup_choose batch. */
+export interface ClarifyQuestion {
+  qid: string;
+  question: string;
+  choices: string[] | null;
+  multiSelect: boolean;
+}
+
+/** Pending clarify / setup_choose card (answered via clarify.lock +/or respond). */
+export interface ClarifyRequest {
+  serverRequestId: string;
+  sessionId: string;
+  questions: ClarifyQuestion[];
+  /** setup_choose kind when present. */
+  setupKind?: string;
+}
+
+/** Masked value prompts: sudo / secret / vault unlock / vault code. */
+export type SecretPromptKind =
+  | "sudo"
+  | "secret"
+  | "vault_unlock"
+  | "vault_code";
+
+export interface SecretPromptRequest {
+  serverRequestId: string;
+  sessionId: string;
+  kind: SecretPromptKind;
+  title: string;
+  description: string;
+  /** Optional command block (sudo). */
+  command?: string;
+  /** Placeholder / env var hint. */
+  hint?: string;
+}
+
+/** vault.save_login — identifier + password pair as JSON value. */
+export interface VaultSaveLoginRequest {
+  serverRequestId: string;
+  sessionId: string;
+  site: string;
+  origin: string;
 }
 
 export interface SessionSummary {

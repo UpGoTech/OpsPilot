@@ -1,0 +1,381 @@
+/* Inter is already shipped via frappe-ui (bundled woff2) — no remote fonts (MV3 CSP). */
+
+:root {
+  --side-header-bg: #f3f6ef;
+  --side-bg: #ffffff;
+  --side-ink: #1a1a1a;
+  --side-muted: #6b6b6b;
+  --side-faint: #9a9a9a;
+  --side-line: #e8ebe4;
+  --side-chip: #f4f4f4;
+  --side-chip-border: #e6e6e6;
+  --side-menu-shadow: 0 8px 28px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.06);
+}
+
+html.opspilot-sidepanel,
+html.opspilot-sidepanel body,
+html.opspilot-sidepanel #app {
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  background: var(--side-bg);
+  color: var(--side-ink);
+  font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+html.opspilot-sidepanel body {
+  overflow: hidden;
+}
+
+.side-header {
+  background: var(--side-header-bg);
+  border-bottom: 1px solid var(--side-line);
+}
+
+.side-brand {
+  color: var(--side-ink);
+  font-family: Inter, system-ui, sans-serif;
+}
+
+.side-icon-btn {
+  display: inline-flex;
+  height: 32px;
+  width: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: #5c5c5c;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.side-icon-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.05);
+  color: #222;
+}
+
+.side-icon-btn:disabled {
+  opacity: 0.35;
+}
+
+.side-icon-btn.is-active {
+  background: rgba(0, 0, 0, 0.06);
+  color: #111;
+}
+
+.side-menu {
+  border-radius: 14px;
+  border: 1px solid #ececec;
+  background: #fff;
+  box-shadow: var(--side-menu-shadow);
+}
+
+.side-menu-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  font-size: 13.5px;
+  color: #3d3d3d;
+  text-align: left;
+  transition: background 0.1s ease;
+}
+
+.side-menu-row:hover {
+  background: #f7f7f7;
+}
+
+.side-menu-icon {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  color: #5a5a5a;
+}
+
+.side-menu-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: #efefef;
+}
+
+.side-toggle {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: #d8d8d8;
+  transition: background 0.15s ease;
+}
+
+.side-toggle.is-on {
+  background: #1a1a1a;
+}
+
+.side-toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: transform 0.15s ease;
+}
+
+.side-toggle.is-on .side-toggle-knob {
+  transform: translateX(16px);
+}
+
+.side-suggestion {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  border: 1px solid var(--side-chip-border);
+  background: #fff;
+  padding: 8px 14px 8px 8px;
+  font-size: 13px;
+  color: #2b2b2b;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.side-suggestion:hover {
+  background: #fafafa;
+  border-color: #dcdcdc;
+}
+
+.side-suggestion-icon {
+  display: inline-flex;
+  height: 26px;
+  width: 26px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--side-chip);
+  color: #5a5a5a;
+}
+
+.side-composer-card {
+  border-radius: 20px;
+  border: 1px solid #e6e6e6;
+  background: #fff;
+  padding: 12px 12px 10px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.side-composer-input {
+  display: block;
+  width: 100%;
+  min-height: 24px;
+  max-height: 120px;
+  resize: none;
+  border: 0;
+  background: transparent;
+  padding: 0 2px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--side-ink);
+  /* Kill UA / frappe-ui focus rings — the outer card already frames the field. */
+  outline: none !important;
+  box-shadow: none !important;
+  --tw-ring-shadow: 0 0 #0000;
+  --tw-ring-offset-shadow: 0 0 #0000;
+}
+
+.side-composer-input:focus,
+.side-composer-input:focus-visible {
+  outline: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.side-composer-input::placeholder {
+  color: #a0a0a0;
+}
+
+.side-composer-input:disabled {
+  opacity: 0.55;
+}
+
+.side-model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: #8a8a8a;
+}
+
+.side-model-chip:hover {
+  background: #f3f3f3;
+  color: #555;
+}
+
+.side-send {
+  display: inline-flex;
+  height: 30px;
+  width: 30px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #ececec;
+  color: #b0b0b0;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.side-send.is-active {
+  background: #1a1a1a;
+  color: #fff;
+}
+
+.side-send.is-active:hover {
+  background: #000;
+}
+
+.side-composer.is-disabled .side-composer-card {
+  background: #f7f7f7;
+  border-color: #ebebeb;
+}
+
+.side-disabled-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 18px;
+  background: rgba(243, 246, 239, 0.72);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: side-fade-in 0.2s ease;
+}
+
+.side-disabled-overlay-card {
+  width: 100%;
+  max-width: 300px;
+  border-radius: 18px;
+  border: 1px solid #e4e8de;
+  background: rgba(255, 255, 255, 0.92);
+  padding: 22px 18px 18px;
+  text-align: center;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+}
+
+.side-disabled-kicker {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #7a8570;
+}
+
+.side-disabled-mood {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 8px;
+  color: #6a7460;
+}
+
+.side-disabled-overlay.is-sad .side-disabled-mood {
+  color: #8a7a4a;
+}
+
+.side-disabled-overlay.is-cry .side-disabled-mood {
+  color: #7a6a8a;
+}
+
+.side-disabled-overlay.is-login .side-disabled-mood {
+  color: #5a6a7a;
+}
+
+.side-disabled-quote {
+  margin: 12px 0 0;
+  font-size: 15px;
+  font-weight: 560;
+  line-height: 1.45;
+  color: #1a1a1a;
+  user-select: none;
+}
+
+.side-disabled-quote.is-clickable {
+  cursor: pointer;
+}
+
+.side-disabled-hint {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #6b6b6b;
+}
+
+.side-disabled-cta {
+  margin-top: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 36px;
+  border-radius: 999px;
+  background: #1a1a1a;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.side-disabled-cta:hover {
+  background: #000;
+}
+
+.side-disabled-link {
+  margin-top: 12px;
+  display: inline-flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #4a4a4a;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.side-disabled-link:hover {
+  color: #1a1a1a;
+}
+
+@keyframes side-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Restyle shared Transcript inside the side panel */
+html.opspilot-sidepanel .agent-transcript {
+  background: transparent !important;
+  padding: 4px 4px 12px !important;
+}
+
+html.opspilot-sidepanel .side-chat-body .agent-transcript {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+html.opspilot-sidepanel .agent-panel,
+html.opspilot-sidepanel .agent-host > aside {
+  width: 100% !important;
+  border: 0 !important;
+  background: #fff !important;
+}

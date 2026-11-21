@@ -1,15 +1,17 @@
 # OpsPilot Engineering Guide
 
-OpsPilot is a **Tauri 2** remote-only desktop client for [Hermes Agent](https://github.com/nousresearch/hermes-agent). It talks to an already-running `hermes serve` / dashboard gateway the same way Hermes Desktop does in remote mode. It does **not** install, bundle, or manage a local Hermes runtime.
+OpsPilot is a **Manifest V3 Side Panel** for Chrome / Brave / Edge ([`extension/`](./extension/), [`spec/v2.md`](./spec/v2.md)). It talks to an already-running `hermes serve` / dashboard gateway the same way Hermes Desktop does in remote mode. It does **not** install, bundle, or manage a local Hermes runtime.
 
-Product and implementation plans live under [`spec/`](./spec/). Read [`spec/v1.md`](./spec/v1.md) before changing scope.
+This repo is **extension-only**. The former Tauri desktop client lived under `version-01` / archived [`spec/archive/v1-tauri.md`](./spec/archive/v1-tauri.md).
+
+Product and implementation plans live under [`spec/`](./spec/). Read [`spec/v2.md`](./spec/v2.md) and [`spec/chat-parity.md`](./spec/chat-parity.md) before changing scope.
 
 ## What this app is
 
 Four parties, each authoritative for one thing:
 
-- **Tauri (Rust)** owns the machine: persisted ERPNext site URL, in-memory ERPNext `sid`, Frappe HTTP, Hermes probes / `/api/fs`, and the WebSocket JSON-RPC dial. Native networking stays in Rust so proxied remotes work (same lesson as Desktop dialing WS from the main process).
-- **The Vue renderer** owns the experience: boot gate (URL → login → shell), navigation, presentation, and ephemeral interaction state.
+- **Extension native (TypeScript)** owns the machine: persisted ERPNext site URL, in-memory ERPNext `sid`, Frappe HTTP (via Desk tab RPC when needed), Hermes probes / `/api/fs`, and the WebSocket JSON-RPC dial. Networking stays in `extension/native/*` so proxied remotes work.
+- **The Vue side panel** owns the experience: boot gate (site URL → Desk session → shell), navigation, presentation, and ephemeral interaction state.
 - **ERPNext + `opspilot_frappe`** owns identity and per-user Hermes settings (DocType vault). See [`spec/erpnext-integration.md`](./spec/erpnext-integration.md).
 - **The Hermes gateway** owns the work: sessions, tools, model calls, streaming events, and the remote workspace filesystem.
 
@@ -21,49 +23,50 @@ Keep the seams clean. The UI never reimplements agent behavior. Gateway truth is
 |---|---|
 | Readiness | `GET {base}/api/status` |
 | Chat / sessions | `wss://{host}{prefix}/api/ws?token=…` newline-delimited JSON-RPC |
-| Files | `GET /api/fs/default-cwd`, `/api/fs/list`, `/api/fs/read-text` with `X-Hermes-Session-Token` |
+| Files | `GET /api/fs/default-cwd`, `/api/fs/list`, `/api/fs/read-text`, `/api/fs/download` with session cookies (`credentials: "include"`) or `X-Hermes-Session-Token` |
 
 Auth matches Hermes Desktop remote mode:
 
 1. Probe `GET /api/status` (+ `/api/auth/providers` when `auth_required`).
-2. **Password gateways** (`basic`): `POST /auth/password-login` → `hermes_session_*` cookies; REST sends `Cookie`; WS remints `POST /api/auth/ws-ticket` then dials `/api/ws?ticket=…`.
+2. **Password gateways** (`basic`): `POST /auth/password-login` → `hermes_session_*` cookies in the browser jar; REST uses `credentials: "include"` (+ gateway-tab fallback); WS remints `POST /api/auth/ws-ticket` then dials `/api/ws?ticket=…`.
 3. **Token gateways** (no auth gate / legacy): `X-Hermes-Session-Token` + `/api/ws?token=…`.
 
-Hermes credentials are **not** edited in OpsPilot. After ERPNext login, Rust fetches the signed-in user’s `OpsPilot Settings` DocType and maps it onto the existing Hermes `ConnectionConfig` (password or token path unchanged).
+Hermes credentials are **not** edited in OpsPilot. After Desk session adopt, native fetches the signed-in user’s `OpsPilot Settings` DocType and maps it onto `ConnectionConfig`.
 
 Core RPCs: `ping`, `session.create`, `session.list`, `session.activate`, `session.history`, `session.title`, `prompt.submit`, `session.interrupt`.
 
 ## Stack
 
-- Tauri 2 + Rust
-- Vue 3 + Vite + TypeScript + Pinia
-- [frappe-ui](https://ui.frappe.io/) for shell primitives (Sidebar / rail / inputs / buttons)
-- Persist ERPNext site URL as `{app_config_dir}/erpnext.json`; ERPNext `sid` is memory-only (login required every launch). Hermes runtime config is derived from ERPNext for the process lifetime.
+- Chromium MV3 Side Panel + service worker
+- Vue 3 + Vite + TypeScript + Pinia (shared `src/` + `extension/sidepanel/`)
+- [frappe-ui](https://ui.frappe.io/) for shell primitives
+- Multi-site: side panel enables only on tabs where `opspilot_frappe.api.ping` succeeds (see [`spec/multi-site.md`](./spec/multi-site.md)). Per-hostname Hermes sockets, Desk sessions, and chat/session caches. ERPNext `sid` stays memory/`storage.session` only (Desk cookie adopt).
 - Companion Frappe app: [`frappe-app/opspilot_frappe`](./frappe-app/opspilot_frappe)
 
 ## UI contract
 
-- Cursor-like shell: **center** (tabbed artifact preview + nested webview browser) · **Agent** (right, resizable). No left file-browser rail in v1.
-- Boot: ERPNext URL settings (if missing) → native ERPNext login → shell.
-- App top bar: centered **OpsPilot** · Online/Offline · chat toggle + settings (ERPNext URL) + logout.
-- Agent chrome: open session tabs (× to close) · + new · clock history (search/pin/groups) · ⋯ export · panel toggle.
-- Flat, not boxed. Group with whitespace and hairlines; avoid nested cards and purple/glow defaults.
-- Distinct empty / loading / reconnecting / error states with honest copy and a way forward.
+- Chat-only side panel (no center workspace / nested browser).
+- Boot: focused OpsPilot Desk tab → Desk browser session → shell (optional site URL override in settings).
+- Artifacts: Preview opens a new tab; Download uses Chromium Save As. No Cloudflare tunnels for file sharing — client policy steers Hermes to workspace paths.
+- Flat, not boxed. Group with whitespace and hairlines.
+- Distinct empty / loading / reconnecting / error states.
 - Never steal focus or navigate because a background gateway event arrived.
+- Header **Refresh** reloads session history and remounts artifact extractors.
 
 ## State rules
 
-- ERPNext site URL lives in Rust on disk; ERPNext `sid` lives in Rust memory only.
+- ERPNext site URL lives in extension storage; ERPNext `sid` lives in memory only.
 - Hermes `ConnectionConfig` is derived from ERPNext after login; the renderer holds a cache.
 - Sessions, messages, and file listings are gateway-authoritative caches.
-- Scope persisted keys clearly (`erpnext`, not ad-hoc locals).
 - A stale async result must not overwrite newer user intent.
 
-## v1 scope
+## Scope
 
-In: chat, sessions (history + tabs + pin/delete), center tabs (HTML/PDF artifacts + nested webview browser; artifact Save As via `/api/fs`), export transcript, ERPNext URL settings + login gate, Hermes connect via per-user DocType.
+In: chat, sessions (history + pin/delete), artifact cards (preview tab + Save As), export transcript, ERPNext URL settings + Desk gate, Hermes connect via per-user DocType, interactive prompts (approval / clarify / sudo / secret / vault), transcript refresh.
 
-Out: left workspace file tree / browser rail, local Hermes bootstrap, OAuth, multi-profile connections, voice, terminal, file write/delete, native spreadsheet preview, editing Hermes credentials inside OpsPilot, persisting ERPNext `sid`.
+Out: Tauri/desktop shell, left workspace file tree, local Hermes bootstrap, OAuth, voice, terminal, file write/delete, editing Hermes credentials inside OpsPilot, persisting ERPNext `sid`, public tunnels for file share.
+
+Multi-site Hermes profiles (per Desk hostname) are in scope — see [`spec/multi-site.md`](./spec/multi-site.md).
 
 ## Taste test before handoff
 
@@ -72,26 +75,22 @@ Out: left workspace file tree / browser rail, local Hermes bootstrap, OAuth, mul
 - Does async failure leave a usable UI?
 - Did you update `spec/` if product scope changed?
 
-## Planning / Spec-ing
-
-Use Tracer bullets comes from the Pragmatic Programmer. When building systems, you want to write code that gets you feedback as quickly as possible. Tracer bullets are small slices of functionality that go through all layers of the system, allowing you to test and validate your approach early. This helps in identifying potential issues and ensures that the overall architecture is sound before investing significant time in development.
-
 ## Implementation Guidelines
 
-* Create a new branch before working on a new feature/spec (branch name patterns: feat/, fix/, just like conventional commit pre-fixes)
+* Create a new branch before working on a new feature/spec (branch name patterns: feat/, fix/)
 * Never commit directly to `develop` — open a PR against `develop`
 * Reconcile the spec and log the progress after each phase of development
 * Commit after each meaningful phase
 * Commit the spec before the development commits
-* Use comments only when necessary to explain "why?" not "how?", how must be clear from the code itself
+* Use comments only when necessary to explain "why?" not "how?"
 
 ## Frontend / Backend Sync
 
-* Whenever a new field is added to a backend DocType that is surfaced in the frontend (e.g. settings panels), it must also be handled in the corresponding frontend component so the two stay in sync. This is a convention/reminder only — there is no automatic syncing mechanism; the frontend enumerates fields explicitly.
+* Whenever a new field is added to a backend DocType that is surfaced in the frontend, it must also be handled in the corresponding frontend component.
 
 ## Regression tests
 
-* When we fix a bug, add at the very least a Unit test, and verify before/after by temp revert of fix to make sure the test tests what is intended
+* When we fix a bug, add at the very least a Unit test, and verify before/after by temp revert of fix
 * CI: GitHub Actions workflow `.github/workflows/ci.yml` runs on every PR to `develop`
 
 ## Pull Requests
@@ -99,9 +98,6 @@ Use Tracer bullets comes from the Pragmatic Programmer. When building systems, y
 * Raise PR always against the develop branch
 * Wait for CI (`CI / Success`) to pass before merging
 * Keep pull request descriptions stupid simple
-* Some formats:
-    1. h2 Problem (1-2 sentences), h2 Solution: good for bugs, etc.
-    2. h2 Why? h2 What? h2 How?: good for new features and enhancements
 
 ## Branch protection
 

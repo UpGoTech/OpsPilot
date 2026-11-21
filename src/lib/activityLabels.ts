@@ -108,7 +108,11 @@ export function summarizeDetail(raw: unknown): string | undefined {
   if (typeof raw === "string") {
     const t = raw.trim();
     if (!t || /^Running tool/i.test(t)) return undefined;
-    return t.length > 160 ? `${t.slice(0, 157)}…` : t;
+    // Keep enough of path-bearing commands so artifact cards can mine .pdf/.zip.
+    const limit = /\.(?:pdf|zip|xlsx?|docx?|html?)\b|\/opt\//i.test(t)
+      ? 800
+      : 160;
+    return t.length > limit ? `${t.slice(0, limit - 1)}…` : t;
   }
   if (typeof raw === "object") {
     const obj = raw as Record<string, unknown>;

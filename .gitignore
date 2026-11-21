@@ -10,8 +10,8 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+extension/dist
 *.local
-src-tauri/target
 opspilot-tmp
 
 # Editor directories and files
@@ -24,3 +24,6 @@ opspilot-tmp
 *.njsproj
 *.sln
 *.sw?
+
+.venv-icons/
+extension/icons/_preview-toolbar.png

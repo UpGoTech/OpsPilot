@@ -45,7 +45,12 @@ body {
 
 /* Kill WebKit/frappe blue focus + spellcheck chrome in the composer */
 .agent-composer textarea,
-.agent-composer textarea:focus {
+.agent-composer textarea:focus,
+.side-composer textarea,
+.side-composer textarea:focus,
+.side-composer-input,
+.side-composer-input:focus,
+.side-composer-input:focus-visible {
   border: none !important;
   outline: none !important;
   box-shadow: none !important;

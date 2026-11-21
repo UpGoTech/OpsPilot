@@ -1,9 +1,34 @@
 import { defineStore } from "pinia";
 import { ref, watch } from "vue";
-import { useCenterTabsStore } from "./centerTabs";
+import { prepareHtmlPreviewTabUrl } from "../lib/htmlPreview";
 
 const AGENT_WIDTH_KEY = "opspilot.agentWidth";
 const AGENT_OPEN_KEY = "opspilot.agentOpen";
+
+/** Chromium extension side panel — open artifacts in real browser tabs. */
+function chromiumTabs(): {
+  create: (props: { url: string; active?: boolean }) => Promise<unknown>;
+} | null {
+  try {
+    const c = (
+      globalThis as {
+        chrome?: {
+          runtime?: { id?: string };
+          tabs?: {
+            create: (p: {
+              url: string;
+              active?: boolean;
+            }) => Promise<unknown>;
+          };
+        };
+      }
+    ).chrome;
+    if (c?.runtime?.id && c.tabs?.create) return c.tabs;
+  } catch {
+    // not an extension
+  }
+  return null;
+}
 
 function readBool(key: string, fallback: boolean): boolean {
   try {
@@ -36,12 +61,6 @@ export const useLayoutStore = defineStore("layout-v2", () => {
 
   watch(agentOpen, (v) => localStorage.setItem(AGENT_OPEN_KEY, v ? "1" : "0"));
   watch(agentWidth, (v) => localStorage.setItem(AGENT_WIDTH_KEY, String(v)));
-
-  watch(settingsOpen, (open) => {
-    if (open) {
-      void useCenterTabsStore().hideBrowsersForOverlay();
-    }
-  });
 
   function toggleAgent() {
     agentOpen.value = !agentOpen.value;
@@ -77,29 +96,35 @@ export const useLayoutStore = defineStore("layout-v2", () => {
     settingsOpen.value = false;
   }
 
-  /** @deprecated use centerTabs — kept for artifact callers */
-  function navigateBrowser() {
-    const center = useCenterTabsStore();
-    const tab = center.openOrFocusBrowser();
-    if (tab.kind === "browser" && tab.draft.trim()) {
-      void center.navigateActiveBrowser();
-    }
-  }
-
-  function openBlobInBrowser(blob: Blob, title = "Preview") {
-    useCenterTabsStore().openBlobInBrowser(blob, title);
+  function openBlobInBrowser(blob: Blob, _title = "Preview") {
+    const tabs = chromiumTabs();
+    if (!tabs) return;
+    const url = URL.createObjectURL(blob);
+    void tabs.create({ url, active: true });
   }
 
   function openHtmlDocument(
     html: string,
-    title = "HTML preview",
+    _title = "HTML preview",
     opts?: { force?: boolean },
   ) {
-    useCenterTabsStore().openHtmlDocument(html, title, opts);
+    const tabs = chromiumTabs();
+    if (!tabs) return;
+    // Skip streaming auto-open — only user-driven Open preview (force).
+    if (!opts?.force) return;
+    // Do not use blob: tabs — extension CSP blocks inline <script>, so
+    // interactive HTML (embedded DATA + render) shows an empty shell.
+    void prepareHtmlPreviewTabUrl(html)
+      .then((url) => tabs.create({ url, active: true }))
+      .catch((err) => {
+        console.error("HTML preview tab failed", err);
+      });
   }
 
-  function openPdfPreview(url: string, filename: string) {
-    useCenterTabsStore().openPdfPreview(url, filename);
+  function openPdfPreview(url: string, _filename: string) {
+    const tabs = chromiumTabs();
+    if (!tabs) return;
+    void tabs.create({ url, active: true });
   }
 
   return {
@@ -114,7 +139,6 @@ export const useLayoutStore = defineStore("layout-v2", () => {
     setAgentWidth,
     openSettings,
     closeSettings,
-    navigateBrowser,
     openHtmlDocument,
     openBlobInBrowser,
     openPdfPreview,

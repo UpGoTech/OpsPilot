@@ -1,13 +1,16 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import {
+  erpnextActivateSite,
+  erpnextAdoptBrowserSession,
   erpnextFetchOpspilotSettings,
   erpnextLogin,
   erpnextLogout,
+  erpnextProbeSupport,
   getErpnextConfig,
   getErpnextSession,
   saveErpnextConfig,
-} from "../lib/tauri";
+} from "../lib/native";
 import type {
   AuthMode,
   ConnectionConfig,
@@ -22,6 +25,16 @@ export type BootPhase =
   | "connecting"
   | "ready"
   | "error";
+
+/** Classifies boot errors for the gate UI. */
+export type AccessErrorKind =
+  | "none"
+  | "unsupported_site"
+  | "not_permitted"
+  | "other";
+
+const UNSUPPORTED_RE = /does not support OpsPilot/i;
+const NOT_PERMITTED_RE = /not permitted to use AI/i;
 
 function emptyConnection(): ConnectionConfig {
   return {
@@ -54,23 +67,39 @@ export function settingsToConnection(
 
 export const useErpnextStore = defineStore("erpnext", () => {
   const siteUrl = ref("");
+  const lastUsername = ref("");
   const loggedIn = ref(false);
   const user = ref("");
   const fullName = ref("");
   const bootPhase = ref<BootPhase>("loading");
   const lastError = ref<string | null>(null);
-  const settingsMissing = ref(false);
+  const accessError = ref<AccessErrorKind>("none");
+  /** Shown on the connecting gate. */
+  const connectStatus = ref("Starting…");
+  const connectDetail = ref("");
+  const connectProgress = ref(0);
 
   const hasSiteUrl = computed(() => Boolean(siteUrl.value.trim()));
   const displayName = computed(
     () => fullName.value.trim() || user.value.trim() || "",
   );
 
-  async function load() {
+  function classifyAccessError(message: string): AccessErrorKind {
+    if (UNSUPPORTED_RE.test(message)) return "unsupported_site";
+    if (NOT_PERMITTED_RE.test(message)) return "not_permitted";
+    return "other";
+  }
+
+  function clearAccessError() {
     lastError.value = null;
-    settingsMissing.value = false;
+    accessError.value = "none";
+  }
+
+  async function load() {
+    clearAccessError();
     const config = await getErpnextConfig();
     siteUrl.value = config.siteUrl ?? "";
+    lastUsername.value = config.lastUsername ?? "";
     const session = await getErpnextSession();
     loggedIn.value = session.loggedIn;
     user.value = session.user ?? "";
@@ -84,18 +113,30 @@ export const useErpnextStore = defineStore("erpnext", () => {
     }
   }
 
+  async function rememberUsername(usr: string) {
+    const next = usr.trim();
+    lastUsername.value = next;
+    await saveErpnextConfig({
+      siteUrl: siteUrl.value.trim(),
+      lastUsername: next,
+    });
+  }
+
   async function saveSiteUrl(url: string) {
-    lastError.value = null;
+    clearAccessError();
     const previous = siteUrl.value.trim();
-    const saved = await saveErpnextConfig({ siteUrl: url.trim() });
+    const saved = await saveErpnextConfig({
+      siteUrl: url.trim(),
+      lastUsername: lastUsername.value.trim(),
+    });
     siteUrl.value = saved.siteUrl ?? "";
+    lastUsername.value = saved.lastUsername ?? lastUsername.value;
     const next = siteUrl.value.trim();
     const siteChanged = previous !== next;
     if (siteChanged || !next) {
       loggedIn.value = false;
       user.value = "";
       fullName.value = "";
-      settingsMissing.value = false;
       bootPhase.value = next ? "needs_login" : "needs_url";
     } else if (bootPhase.value === "needs_url") {
       // Left the URL gate without changing the site.
@@ -104,9 +145,43 @@ export const useErpnextStore = defineStore("erpnext", () => {
     return saved;
   }
 
+  /** Fast check (no login). Sets error phase when the site lacks opspilot_frappe. */
+  async function probeSupport(): Promise<boolean> {
+    if (!siteUrl.value.trim()) {
+      return false;
+    }
+    try {
+      const ok = await erpnextProbeSupport();
+      if (!ok) {
+        bootPhase.value = "error";
+        accessError.value = "unsupported_site";
+        lastError.value = `This site does not support OpsPilot (${siteUrl.value}). Install the OpsPilot app on this site.`;
+        return false;
+      }
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (UNSUPPORTED_RE.test(message) || /not installed/i.test(message)) {
+        bootPhase.value = "error";
+        accessError.value = "unsupported_site";
+        lastError.value = message;
+        return false;
+      }
+      // Network blip — don't block login; connect path will re-check.
+      return true;
+    }
+  }
+
   async function login(usr: string, pwd: string) {
-    lastError.value = null;
-    settingsMissing.value = false;
+    clearAccessError();
+    // Persist username even if password fails — saves retyping next launch.
+    try {
+      await rememberUsername(usr);
+    } catch {
+      // Non-fatal.
+    }
+    // Step 1: authenticate only. Stay on the login screen until this returns.
+    // Connecting gate is opened by App after success (avoids "Starting… 0%" stall).
     const session = await erpnextLogin(usr, pwd);
     loggedIn.value = session.loggedIn;
     user.value = session.user ?? "";
@@ -114,8 +189,47 @@ export const useErpnextStore = defineStore("erpnext", () => {
     if (session.siteUrl) {
       siteUrl.value = session.siteUrl;
     }
-    bootPhase.value = "connecting";
     return session;
+  }
+
+  /** Bind Pinia to a Desk site (hostname) without logging in yet. */
+  async function activateSite(url: string) {
+    const key = await erpnextActivateSite(url);
+    siteUrl.value = url.trim();
+    return key;
+  }
+
+  /** Side panel: use the Desk browser session instead of a password form. */
+  async function adoptBrowserSession(preferredSiteUrl?: string) {
+    clearAccessError();
+    const session = await erpnextAdoptBrowserSession(preferredSiteUrl);
+    loggedIn.value = session.loggedIn;
+    user.value = session.user ?? "";
+    fullName.value = session.fullName ?? "";
+    if (session.siteUrl) {
+      siteUrl.value = session.siteUrl;
+    }
+    if (session.user) {
+      try {
+        await rememberUsername(session.user);
+      } catch {
+        // Non-fatal.
+      }
+    }
+    return session;
+  }
+
+  /** Soft reset UI when switching to another OpsPilot site. */
+  function resetForSiteSwitch(nextSiteUrl: string) {
+    siteUrl.value = nextSiteUrl.trim();
+    loggedIn.value = false;
+    user.value = "";
+    fullName.value = "";
+    clearAccessError();
+    bootPhase.value = nextSiteUrl.trim() ? "needs_login" : "needs_url";
+    connectProgress.value = 0;
+    connectStatus.value = "";
+    connectDetail.value = "";
   }
 
   async function logout() {
@@ -127,28 +241,48 @@ export const useErpnextStore = defineStore("erpnext", () => {
     loggedIn.value = false;
     user.value = "";
     fullName.value = "";
-    settingsMissing.value = false;
-    lastError.value = null;
+    clearAccessError();
     bootPhase.value = siteUrl.value.trim() ? "needs_login" : "needs_url";
   }
 
+  /**
+   * Post-login steps only:
+   * 2) site has opspilot_frappe
+   * 3) this user has OpsPilot Settings (AI permitted)
+   */
   async function fetchSettings(): Promise<ConnectionConfig | null> {
-    lastError.value = null;
-    settingsMissing.value = false;
+    clearAccessError();
     try {
+      // Step 2 — OpsPilot app installed?
+      setConnectProgress(
+        20,
+        "Checking OpsPilot…",
+        "Confirming this site has the OpsPilot app.",
+      );
+      const supported = await probeSupport();
+      if (!supported) {
+        return null;
+      }
+
+      // Step 3 — user has AI settings?
+      setConnectProgress(
+        40,
+        "Checking AI access…",
+        "Loading your OpsPilot Settings.",
+      );
       const settings = await erpnextFetchOpspilotSettings();
       if (!settings || !settings.gatewayUrl?.trim()) {
-        settingsMissing.value = true;
         bootPhase.value = "error";
-        lastError.value =
-          "No OpsPilot Settings found for your user in ERPNext. Ask an admin to create an OpsPilot Settings document for your account.";
+        accessError.value = "not_permitted";
+        lastError.value = "This user is not permitted to use AI.";
         return null;
       }
       return settingsToConnection(settings);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       lastError.value = message;
-      if (/session expired|Not logged|sign in again/i.test(message)) {
+      accessError.value = classifyAccessError(message);
+      if (/session expired|Not logged|Not signed in|sign in again|Desk tab/i.test(message)) {
         loggedIn.value = false;
         bootPhase.value = "needs_login";
       } else {
@@ -160,16 +294,36 @@ export const useErpnextStore = defineStore("erpnext", () => {
 
   function markReady() {
     bootPhase.value = "ready";
-    lastError.value = null;
+    clearAccessError();
+    connectProgress.value = 100;
+    connectStatus.value = "Ready";
+    connectDetail.value = "";
   }
 
-  function markConnecting() {
+  function markConnecting(status = "Checking this site…", detail = "") {
     bootPhase.value = "connecting";
+    connectStatus.value = status;
+    connectDetail.value = detail;
+    connectProgress.value = Math.max(connectProgress.value, 8);
+  }
+
+  function setConnectProgress(
+    progress: number,
+    status: string,
+    detail = "",
+  ) {
+    connectProgress.value = Math.min(100, Math.max(0, progress));
+    connectStatus.value = status;
+    connectDetail.value = detail;
   }
 
   function markError(message: string) {
     bootPhase.value = "error";
     lastError.value = message;
+    accessError.value = classifyAccessError(message);
+    connectProgress.value = 0;
+    connectStatus.value = "";
+    connectDetail.value = "";
   }
 
   function openUrlSettings() {
@@ -178,25 +332,38 @@ export const useErpnextStore = defineStore("erpnext", () => {
 
   function markNeedsLogin() {
     bootPhase.value = "needs_login";
+    connectProgress.value = 0;
+    connectStatus.value = "";
+    connectDetail.value = "";
   }
 
   return {
     siteUrl,
+    lastUsername,
     loggedIn,
     user,
     fullName,
     bootPhase,
     lastError,
-    settingsMissing,
+    accessError,
+    connectStatus,
+    connectDetail,
+    connectProgress,
     hasSiteUrl,
     displayName,
     load,
     saveSiteUrl,
+    rememberUsername,
     login,
+    activateSite,
+    adoptBrowserSession,
+    resetForSiteSwitch,
     logout,
+    probeSupport,
     fetchSettings,
     markReady,
     markConnecting,
+    setConnectProgress,
     markError,
     markNeedsLogin,
     openUrlSettings,

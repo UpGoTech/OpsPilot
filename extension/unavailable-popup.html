@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpsPilot</title>
+    <link rel="stylesheet" href="unavailable-popup.css" />
+  </head>
+  <body>
+    <div class="sheet" role="dialog" aria-labelledby="headline">
+      <header class="bar">
+        <div class="brand">
+          <img class="logo" src="icons/icon-48.png" width="32" height="32" alt="" />
+          <span class="name">Ops<span class="accent">Pilot</span></span>
+        </div>
+        <button type="button" class="icon-btn" id="close" title="Close" aria-label="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M18 6 6 18" />
+            <path d="m6 6 12 12" />
+          </svg>
+        </button>
+      </header>
+
+      <main class="body">
+        <h1 id="headline" class="headline">OpsPilot isn’t available here</h1>
+        <p class="sub" id="reason">
+          This page isn’t a Desk site with the OpsPilot app installed, so the
+          side panel stays closed.
+        </p>
+        <p class="host" id="host" hidden></p>
+        <button type="button" class="primary" id="dismiss">Got it</button>
+        <p class="foot">
+          Need OpsPilot on this site?
+          <a
+            id="docs"
+            href="https://github.com/UpGoTech/opspilot_frappe"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Install the OpsPilot app</a
+          >
+        </p>
+      </main>
+    </div>
+    <script src="unavailable-popup.js" type="module"></script>
+  </body>
+</html>

@@ -1,20 +1,49 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
+import {
+  extractFileArtifacts,
+  lastHtmlPathFromTexts,
+  refersToHtmlArtifact,
+} from "../lib/extractFileArtifacts";
 import { useChatStore } from "../stores/chat";
+import ApprovalCard from "./ApprovalCard.vue";
+import ClarifyCard from "./ClarifyCard.vue";
 import MarkdownBody from "./MarkdownBody.vue";
+import SecretPromptCard from "./SecretPromptCard.vue";
 import TurnScaffold from "./TurnScaffold.vue";
+import VaultSaveLoginCard from "./VaultSaveLoginCard.vue";
 
 const chat = useChatStore();
 const scroller = ref<HTMLElement | null>(null);
 
+const approvals = computed(() => chat.pendingApprovals);
+const clarifies = computed(() => chat.pendingClarify);
+const secrets = computed(() => chat.pendingSecrets);
+const vaultSaves = computed(() => chat.pendingVaultSaves);
+const hasPrompts = computed(
+  () =>
+    approvals.value.length +
+      clarifies.value.length +
+      secrets.value.length +
+      vaultSaves.value.length >
+    0,
+);
+
 watch(
   () =>
-    chat.turns
-      .map(
-        (t) =>
-          `${t.id}:${t.running}:${t.activity.length}:${t.replies.map((r) => r.content.length).join(",")}`,
-      )
-      .join("|"),
+    [
+      chat.turns
+        .map(
+          (t) =>
+            `${t.id}:${t.running}:${t.activity.length}:${t.replies.map((r) => r.content.length).join(",")}`,
+        )
+        .join("|"),
+      chat.pendingApprovals.length,
+      chat.pendingClarify.length,
+      chat.pendingSecrets.length,
+      chat.pendingVaultSaves.length,
+      chat.statusLine ?? "",
+    ].join("~"),
   async () => {
     await nextTick();
     if (scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight;
@@ -26,10 +55,45 @@ function visibleReplies(turn: (typeof chat.turns)[number]) {
 }
 
 /** Tool stdout/detail — agent often names zips here without a full /opt path. */
-function artifactSourcesFor(turn: (typeof chat.turns)[number]): string[] {
+function activitySources(turn: (typeof chat.turns)[number]): string[] {
   return turn.activity
     .flatMap((step) => [step.detail, step.output, step.label])
     .filter((s): s is string => Boolean(s && s.trim()));
+}
+
+/**
+ * Hermes sometimes describes an HTML file without repeating its path
+ * ("last generated…"). Re-surface the most recent HTML path from earlier
+ * turns so Preview/Download cards still appear.
+ */
+function artifactSourcesFor(
+  turn: (typeof chat.turns)[number],
+  turnIndex: number,
+  messageContent: string,
+): string[] {
+  const local = activitySources(turn);
+  const hasHtml = extractFileArtifacts(messageContent, local).some(
+    (f) => f.ext === "html" || f.ext === "htm",
+  );
+  if (hasHtml) return local;
+
+  const userText = turn.user?.content ?? "";
+  if (!refersToHtmlArtifact(userText, messageContent)) return local;
+
+  const priorTexts: string[] = [];
+  for (let i = 0; i < turnIndex; i++) {
+    const prev = chat.turns[i];
+    if (!prev) continue;
+    priorTexts.push(...activitySources(prev));
+    for (const reply of prev.replies) {
+      if (reply.content?.trim()) priorTexts.push(reply.content);
+    }
+  }
+  // Same-turn tools may still name the path even when prose does not.
+  priorTexts.push(...local);
+
+  const lastHtml = lastHtmlPathFromTexts(priorTexts);
+  return lastHtml ? [...local, lastHtml] : local;
 }
 
 async function copyReply(text: string) {
@@ -59,13 +123,13 @@ async function copyReply(text: string) {
     >
       <div class="text-[14px] font-medium text-[#3c3c3c]">New chat</div>
       <p class="mt-1.5 max-w-[260px] text-[13px] leading-relaxed text-[#8a8a8a]">
-        Ask Hermes to work with your remote workspace, files, and ERPNext.
+        Ask AI to work with your remote workspace, files, and ERPNext.
       </p>
     </div>
 
     <div v-else class="mx-auto flex w-full max-w-[680px] flex-col gap-5">
       <article
-        v-for="turn in chat.turns"
+        v-for="(turn, turnIndex) in chat.turns"
         :key="turn.id"
         class="flex flex-col gap-3"
       >
@@ -117,8 +181,11 @@ async function copyReply(text: string) {
           class="group"
         >
           <MarkdownBody
+            :key="`${message.id}:${chat.renderEpoch}`"
             :source="message.content"
-            :artifact-sources="artifactSourcesFor(turn)"
+            :artifact-sources="
+              artifactSourcesFor(turn, turnIndex, message.content)
+            "
             :auto-open-html="message.streaming === true"
           />
           <div
@@ -154,7 +221,87 @@ async function copyReply(text: string) {
             </button>
           </div>
         </div>
+
+        <!-- Interactive prompts only on the latest / live turn. -->
+        <template
+          v-if="
+            hasPrompts &&
+            (turn.running || turn === chat.turns[chat.turns.length - 1])
+          "
+        >
+          <ApprovalCard
+            v-for="req in approvals"
+            :key="req.serverRequestId"
+            :request="req"
+            @choose="(choice) => chat.answerApproval(req.requestId, choice)"
+          />
+          <ClarifyCard
+            v-for="req in clarifies"
+            :key="req.serverRequestId"
+            :request="req"
+            @submit="(answers) => chat.answerClarify(req.serverRequestId, answers)"
+            @skip="chat.skipClarify(req.serverRequestId)"
+          />
+          <SecretPromptCard
+            v-for="req in secrets"
+            :key="req.serverRequestId"
+            :request="req"
+            @submit="(value) => chat.answerSecret(req.serverRequestId, value)"
+            @cancel="chat.answerSecret(req.serverRequestId, '')"
+          />
+          <VaultSaveLoginCard
+            v-for="req in vaultSaves"
+            :key="req.serverRequestId"
+            :request="req"
+            @submit="(value) => chat.answerVaultSave(req.serverRequestId, value)"
+            @cancel="chat.answerVaultSave(req.serverRequestId, '')"
+          />
+        </template>
+
+        <p
+          v-if="
+            chat.statusLine &&
+            (turn.running || turn === chat.turns[chat.turns.length - 1])
+          "
+          class="mt-2 text-[12px] text-[#8a8a8a]"
+        >
+          {{ chat.statusLine }}
+        </p>
       </article>
+    </div>
+
+    <!-- Prompts when there is no turn chrome yet (edge case). -->
+    <div
+      v-if="hasPrompts && !chat.turns.length"
+      class="mx-auto mt-3 w-full max-w-[680px]"
+    >
+      <ApprovalCard
+        v-for="req in approvals"
+        :key="`empty-${req.serverRequestId}`"
+        :request="req"
+        @choose="(choice) => chat.answerApproval(req.requestId, choice)"
+      />
+      <ClarifyCard
+        v-for="req in clarifies"
+        :key="`empty-c-${req.serverRequestId}`"
+        :request="req"
+        @submit="(answers) => chat.answerClarify(req.serverRequestId, answers)"
+        @skip="chat.skipClarify(req.serverRequestId)"
+      />
+      <SecretPromptCard
+        v-for="req in secrets"
+        :key="`empty-s-${req.serverRequestId}`"
+        :request="req"
+        @submit="(value) => chat.answerSecret(req.serverRequestId, value)"
+        @cancel="chat.answerSecret(req.serverRequestId, '')"
+      />
+      <VaultSaveLoginCard
+        v-for="req in vaultSaves"
+        :key="`empty-v-${req.serverRequestId}`"
+        :request="req"
+        @submit="(value) => chat.answerVaultSave(req.serverRequestId, value)"
+        @cancel="chat.answerVaultSave(req.serverRequestId, '')"
+      />
     </div>
 
     <div

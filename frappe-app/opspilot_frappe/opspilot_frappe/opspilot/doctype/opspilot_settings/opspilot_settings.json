@@ -28,10 +28,10 @@
     {
       "fieldname": "gateway_section",
       "fieldtype": "Section Break",
-      "label": "Hermes Gateway"
+      "label": "AI Gateway"
     },
     {
-      "description": "Base URL of the Hermes serve / dashboard gateway (e.g. https://hermes.example.com)",
+      "description": "Base URL of the AI gateway for this user (e.g. https://ai.example.com)",
       "fieldname": "gateway_url",
       "fieldtype": "Data",
       "in_list_view": 1,

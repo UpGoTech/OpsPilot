@@ -1,7 +1,7 @@
 app_name = "opspilot_frappe"
 app_title = "OpsPilot"
 app_publisher = "OpsPilot"
-app_description = "Per-user Hermes settings vault for OpsPilot"
+app_description = "Per-user AI settings vault for OpsPilot"
 app_email = "opspilot@example.com"
 app_license = "MIT"
 

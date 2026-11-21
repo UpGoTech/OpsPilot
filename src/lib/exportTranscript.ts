@@ -10,7 +10,7 @@ export function transcriptToMarkdown(
       msg.role === "user"
         ? "You"
         : msg.role === "assistant"
-          ? "Hermes"
+          ? "AI"
           : msg.role;
     lines.push(`## ${role}`, "", msg.content || "", "");
   }

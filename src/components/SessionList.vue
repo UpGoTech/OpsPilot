@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { Dropdown } from "frappe-ui";
-import { fsDefaultCwd } from "../lib/tauri";
+import { fsDefaultCwd } from "../lib/native";
 import {
   buildSessionSections,
   formatRelativeTime,
@@ -74,7 +74,7 @@ function menuOptions(session: SessionSummary) {
 async function confirmDelete(session: SessionSummary) {
   const title = session.title || "Untitled";
   const ok = window.confirm(
-    `Delete “${title}”? This permanently removes the session from the gateway.`,
+    `Delete “${title}”? This permanently removes the session.`,
   );
   if (!ok) return;
   actionError.value = null;
@@ -121,8 +121,13 @@ async function createSession() {
 }
 
 async function selectSession(session: SessionSummary) {
-  await tabs.activateTab(session.id);
-  emit("select", session);
+  try {
+    await tabs.activateTab(session.id);
+    emit("select", session);
+  } catch (err) {
+    actionError.value =
+      err instanceof Error ? err.message : `Open failed: ${String(err)}`;
+  }
 }
 </script>
 
@@ -176,7 +181,7 @@ async function selectSession(session: SessionSummary) {
         v-if="!gateway.isConnected"
         class="px-2.5 py-3 text-[12px] text-[#9a9a9a]"
       >
-        Connect to a gateway to load history.
+        Sign in to load history.
       </div>
       <div
         v-else-if="sessions.loading"

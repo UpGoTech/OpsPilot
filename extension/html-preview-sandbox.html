@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>OpsPilot preview</title>
+  </head>
+  <body>
+    <script>
+      // MV3 sandbox page: inline scripts allowed; no chrome.* APIs.
+      // Parent / bridge posts { type: "opspilot-html-preview", html }.
+      function paint(html) {
+        if (typeof html !== "string") return;
+        document.open();
+        document.write(html);
+        document.close();
+      }
+
+      window.addEventListener("message", function (event) {
+        var data = event.data;
+        if (!data || data.type !== "opspilot-html-preview") return;
+        paint(data.html);
+      });
+
+      function ready() {
+        var msg = { type: "opspilot-html-preview-ready" };
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage(msg, "*");
+        }
+        if (window.opener) {
+          window.opener.postMessage(msg, "*");
+        }
+      }
+      ready();
+    </script>
+  </body>
+</html>
